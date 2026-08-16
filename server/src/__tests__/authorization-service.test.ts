@@ -1134,6 +1134,150 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows same-company CEO agents to comment on and mutate peer-owned issues", async () => {
+    const company = await createCompany(db, "CompanyControlPlaneCeo");
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
+    const authorization = authorizationService(db);
+    const actor = {
+      type: "agent" as const,
+      agentId: ceoAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+    };
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    };
+
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      await expect(authorization.decide({ actor, action, resource })).resolves.toMatchObject({
+        allowed: true,
+        reason: "allow_company_control_plane",
+      });
+    }
+  });
+
+  it("allows explicit owner-proxy JWTs but not ordinary peer or non-owner JWT agents", async () => {
+    const company = await createCompany(db, "CompanyControlPlaneOwnerProxy");
+    const peerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
+    const ownerUserId = await createUser(db);
+    const memberUserId = await createUser(db);
+    await db.insert(companyMemberships).values([
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: ownerUserId,
+        status: "active",
+        membershipRole: "owner",
+      },
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: memberUserId,
+        status: "active",
+        membershipRole: "member",
+      },
+    ]);
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    };
+
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: peerAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+        onBehalfOfUserId: ownerUserId,
+        onBehalfOfMemberships: [{ companyId: company.id, status: "active", membershipRole: "owner" }],
+      },
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_company_control_plane" });
+
+    await expect(authorization.decide({
+      actor: { type: "agent", agentId: peerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: peerAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+        onBehalfOfUserId: memberUserId,
+        onBehalfOfMemberships: [{ companyId: company.id, status: "active", membershipRole: "member" }],
+      },
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
+  it("keeps company control-plane authority inside company and trust boundaries", async () => {
+    const company = await createCompany(db, "CompanyControlPlaneBoundary");
+    const otherCompany = await createCompany(db, "CompanyControlPlaneBoundaryOther");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const otherCompanyCeo = await createAgent(db, otherCompany.id, { role: "ceo" });
+    const lowTrustCeo = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    };
+    const authorization = authorizationService(db);
+
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: otherCompanyCeo.id,
+        companyId: otherCompany.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_company_boundary" });
+
+    await expect(authorization.decide({
+      actor: {
+        type: "agent",
+        agentId: lowTrustCeo.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_policy_restricted" });
+  });
+
   it("allows mentioned agents to read and comment on assigned issues without granting issue mutation", async () => {
     const company = await createCompany(db, "MentionCommentAuth");
     const allowedProject = await createProject(db, company.id, "MentionAllowed");
