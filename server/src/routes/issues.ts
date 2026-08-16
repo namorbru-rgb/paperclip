@@ -3497,7 +3497,42 @@ export function issueRoutes(
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
     }
+    await auditCompanyControlPlaneAuthorization(req, issue, "issue:comment", boundaryDecision);
     return boundaryDecision;
+  }
+
+  function isCompanyControlPlaneDecision(decision: Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision.allowed && decision.reason === "allow_company_control_plane";
+  }
+
+  async function auditCompanyControlPlaneAuthorization(
+    req: Request,
+    issue: Parameters<typeof decideIssueAccess>[1],
+    action: "issue:comment" | "issue:mutate",
+    decision: Awaited<ReturnType<typeof decideIssueAccess>>,
+  ) {
+    if (!isCompanyControlPlaneDecision(decision)) return;
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.control_plane_authorized",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        authorizationAction: action,
+        authorizationReason: decision.reason,
+        previousAssigneeAgentId: issue.assigneeAgentId,
+        previousAssigneeUserId: issue.assigneeUserId,
+        previousStatus: issue.status,
+        actorSource: req.actor.source ?? null,
+        responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+      },
+    });
   }
 
   function isIssueMentionGrantDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
@@ -3590,10 +3625,14 @@ export function issueRoutes(
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
     }
+    await auditCompanyControlPlaneAuthorization(req, issue, "issue:mutate", boundaryDecision);
     if (issue.assigneeAgentId === null) {
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      if (isCompanyControlPlaneDecision(boundaryDecision)) {
+        return true;
+      }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }

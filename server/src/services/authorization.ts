@@ -103,6 +103,7 @@ export type AuthorizationDecision = {
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
     | "allow_direct_parent_report"
+    | "allow_company_control_plane"
     | "allow_self"
     | "allow_company_agent"
     | "allow_company_member"
@@ -1790,6 +1791,20 @@ export function authorizationService(db: Db) {
       });
     }
 
+    const hasCompanyControlPlaneAuthority =
+      trustResolution.kind === "standard" &&
+      (
+        actorAgent.role === "ceo" ||
+        (
+          input.actor.source === "agent_jwt" &&
+          Boolean(input.actor.onBehalfOfUserId?.trim()) &&
+          Boolean(input.actor.onBehalfOfMemberships?.some((membership) =>
+            membership.companyId === companyId &&
+            membership.status === "active" &&
+            membership.membershipRole === "owner"
+          ))
+        )
+      );
 
     if (input.action === "inbox:manage") {
       if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
@@ -1968,6 +1983,16 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+      if (hasCompanyControlPlaneAuthority) {
+        return allow({
+          action: input.action,
+          reason: "allow_company_control_plane",
+          explanation:
+            actorAgent.role === "ceo"
+              ? "Allowed by same-company CEO control-plane authority."
+              : "Allowed by an explicit same-company owner-proxy agent JWT.",
         });
       }
       if (

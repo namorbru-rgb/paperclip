@@ -778,6 +778,90 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
   });
 
+  it("lets an authorized company control-plane agent mutate a peer-owned issue", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate" || input.action === "issue:read",
+      action: input.action,
+      reason:
+        input.action === "issue:mutate"
+          ? "allow_company_control_plane"
+          : input.action === "issue:read"
+            ? "allow_company_agent"
+            : "deny_missing_grant",
+      explanation: "Company control-plane route test.",
+    }));
+
+    const res = await request(await createApp(peerActor({
+      source: "agent_jwt",
+      onBehalfOfUserId: "board-user",
+    })))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Recovered by control plane" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ title: "Recovered by control plane" }),
+    );
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "tasks:manage_active_checkouts" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.control_plane_authorized",
+        entityId: issueId,
+        details: expect.objectContaining({
+          authorizationAction: "issue:mutate",
+          previousAssigneeAgentId: ownerAgentId,
+          previousStatus: "in_progress",
+          actorSource: "agent_jwt",
+          responsibleUserId: "board-user",
+        }),
+      }),
+    );
+  });
+
+  it("lets an authorized company control-plane agent comment on a peer-owned issue", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment" || input.action === "issue:read",
+      action: input.action,
+      reason:
+        input.action === "issue:comment"
+          ? "allow_company_control_plane"
+          : input.action === "issue:read"
+            ? "allow_company_agent"
+            : "deny_missing_grant",
+      explanation: "Company control-plane route test.",
+    }));
+
+    const res = await request(await createApp(peerActor({
+      source: "agent_jwt",
+      onBehalfOfUserId: "board-user",
+    })))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Recovery owner assigned." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Recovery owner assigned.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.control_plane_authorized",
+        entityId: issueId,
+        details: expect.objectContaining({
+          authorizationAction: "issue:comment",
+          previousAssigneeAgentId: ownerAgentId,
+        }),
+      }),
+    );
+  });
+
   it("allows mentioned peer agents to post comments without ownership of an active checkout", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:comment",
