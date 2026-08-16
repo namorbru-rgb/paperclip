@@ -1275,7 +1275,7 @@ describeEmbeddedPostgres("authorization service", () => {
       },
       action: "issue:mutate",
       resource,
-    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_policy_restricted" });
   });
 
   it("allows mentioned agents to read and comment on assigned issues without granting issue mutation", async () => {
