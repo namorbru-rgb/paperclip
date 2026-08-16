@@ -794,6 +794,11 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor({
       source: "agent_jwt",
       onBehalfOfUserId: "board-user",
+      onBehalfOfMemberships: [{
+        companyId,
+        status: "active",
+        membershipRole: "owner",
+      }],
     })))
       .patch(`/api/issues/${issueId}`)
       .send({ title: "Recovered by control plane" });
@@ -838,6 +843,11 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor({
       source: "agent_jwt",
       onBehalfOfUserId: "board-user",
+      onBehalfOfMemberships: [{
+        companyId,
+        status: "active",
+        membershipRole: "owner",
+      }],
     })))
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "Recovery owner assigned." });
