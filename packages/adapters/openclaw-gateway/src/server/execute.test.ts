@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentParams, resolveSessionKey } from "./execute.js";
+import { buildAgentParams, classifyGatewayFailureFields, resolveSessionKey } from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -96,5 +96,35 @@ describe("buildAgentParams", () => {
       sessionKey: "paperclip",
       idempotencyKey: "run-123",
     });
+  });
+});
+
+describe("classifyGatewayFailureFields", () => {
+  const NOW = new Date("2026-08-17T19:00:00.000Z");
+
+  it("marks relayed subscription-limit failures as provider_quota with the reset deadline", () => {
+    expect(
+      classifyGatewayFailureFields(
+        "FailoverError: You've reached your Codex subscription usage limit. Next reset in 3 days, Aug 20 at 5:28 AM GMT",
+        NOW,
+      ),
+    ).toEqual({
+      errorFamily: "provider_quota",
+      retryNotBefore: "2026-08-20T05:28:00.000Z",
+    });
+  });
+
+  it("marks relayed provider cooldowns as transient_upstream without a deadline", () => {
+    expect(
+      classifyGatewayFailureFields(
+        "FallbackSummaryError: All models failed (1): openai/gpt-5.4: Provider openai is in cooldown (suspending lanes) (rate_limit)",
+        NOW,
+      ),
+    ).toEqual({ errorFamily: "transient_upstream" });
+  });
+
+  it("adds no fields for unclassified gateway failures", () => {
+    expect(classifyGatewayFailureFields("OpenClaw gateway run failed", NOW)).toEqual({});
+    expect(classifyGatewayFailureFields(null, NOW)).toEqual({});
   });
 });
