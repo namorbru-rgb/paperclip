@@ -235,7 +235,7 @@ describe("adapter routes", () => {
     expect(hermesGateway.capabilities).toMatchObject({
       supportsInstructionsBundle: false,
       supportsSkills: false,
-      supportsLocalAgentJwt: true,
+      supportsLocalAgentJwt: false,
       requiresMaterializedRuntimeSkills: false,
       supportsAcp: false,
     });
