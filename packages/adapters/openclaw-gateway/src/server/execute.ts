@@ -3,6 +3,7 @@ import type {
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
 } from "@paperclipai/adapter-utils";
+import { classifyProviderFailure } from "@paperclipai/adapter-utils";
 import {
   asNumber,
   asString,
@@ -137,6 +138,25 @@ function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
 function prefixSessionKeyForAgent(sessionKey: string, agentId: string | null): string {
   if (!agentId || sessionKey.startsWith("agent:")) return sessionKey;
   return `agent:${agentId}:${sessionKey}`;
+}
+
+/**
+ * The gateway relays upstream failover errors as plain text with a generic
+ * `openclaw_gateway_wait_error`/`agent_error` code, so provider quota
+ * exhaustion and cooldowns are classified here from the message to populate
+ * the `errorFamily`/`retryNotBefore` recovery contract. Without this, an
+ * exhausted provider looks like a generic failure and gets full-speed bounded
+ * retries (a retry storm) instead of being deferred to the quota reset.
+ */
+export function classifyGatewayFailureFields(
+  errorMessage: string | null | undefined,
+  now = new Date(),
+): Pick<AdapterExecutionResult, "errorFamily" | "retryNotBefore"> {
+  const classification = classifyProviderFailure(errorMessage, now);
+  return {
+    ...(classification.errorFamily ? { errorFamily: classification.errorFamily } : {}),
+    ...(classification.retryNotBefore ? { retryNotBefore: classification.retryNotBefore } : {}),
+  };
 }
 
 export function resolveSessionKey(input: {
@@ -1310,6 +1330,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timedOut: false,
           errorMessage,
           errorCode: "openclaw_gateway_agent_error",
+          ...classifyGatewayFailureFields(errorMessage),
           resultJson: acceptedPayload,
         };
       }
@@ -1336,15 +1357,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
 
         if (waitStatus === "error") {
+          const waitErrorMessage =
+            nonEmpty(waitPayload?.error) ??
+            lifecycleError ??
+            "OpenClaw gateway run failed";
           return {
             exitCode: 1,
             signal: null,
             timedOut: false,
-            errorMessage:
-              nonEmpty(waitPayload?.error) ??
-              lifecycleError ??
-              "OpenClaw gateway run failed",
+            errorMessage: waitErrorMessage,
             errorCode: "openclaw_gateway_wait_error",
+            ...classifyGatewayFailureFields(waitErrorMessage),
             resultJson: waitPayload,
           };
         }
