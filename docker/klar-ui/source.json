@@ -28,9 +28,10 @@
     "ui/src/pages/PaperclipKlar.tsx"
   ],
   "redesignPatch": {
-    "sha256": "e10d0cd483c26007d99817e6560d525d3fca3690cf80b4f91f7c54553ad3a3e5",
+    "sha256": "469944098c5357800409c2bac6230846b388ef3801a196050cac820be59ff6d1",
     "baseTree": "89ad4ba19a6aa4d440842c09634604405d95105a",
     "paths": [
+      "ui/src/assets/klar.webmanifest",
       "ui/src/components/KlarAttachments.tsx",
       "ui/src/components/KlarBotChat.test.tsx",
       "ui/src/components/KlarBotChat.tsx",
@@ -38,21 +39,28 @@
       "ui/src/components/KlarComposer.tsx",
       "ui/src/components/KlarDecision.tsx",
       "ui/src/components/KlarFilePreview.tsx",
+      "ui/src/components/KlarInstall.test.tsx",
+      "ui/src/components/KlarInstall.tsx",
       "ui/src/components/KlarNewTask.test.tsx",
       "ui/src/components/KlarNewTask.tsx",
       "ui/src/components/Layout.test.tsx",
       "ui/src/components/Layout.tsx",
       "ui/src/components/WorkOverview.tsx",
       "ui/src/components/onboarding/PillGuy.tsx",
+      "ui/src/components/useKlarChatScroll.test.tsx",
+      "ui/src/components/useKlarChatScroll.ts",
       "ui/src/components/useKlarVoice.test.tsx",
       "ui/src/components/useKlarVoice.ts",
+      "ui/src/context/LiveUpdatesProvider.test.ts",
+      "ui/src/context/LiveUpdatesProvider.tsx",
       "ui/src/index.css",
       "ui/src/lib/klar-chat.test.ts",
       "ui/src/lib/klar-chat.ts",
       "ui/src/lib/klar-send.ts",
+      "ui/src/pages/PaperclipKlar.test.tsx",
       "ui/src/pages/PaperclipKlar.tsx",
       "ui/storybook/stories/klar-workspace.stories.tsx"
     ],
-    "resultTree": "02e2622605de9aa315d1a57d8bc38a8b12e21c7c"
+    "resultTree": "020e2ba74c36e9ddd32fbe99cb6bcc5d7c119b5c"
   }
 }

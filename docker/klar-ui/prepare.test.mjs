@@ -100,12 +100,14 @@ test('locale overlay preserves the server and rejects wrong bases, tampering and
   assert.equal(readFileSync(join(cwd, 'server.txt'), 'utf8'), 'new production server\n');
 });
 
-test('redesign accepts only the reviewed UI/story paths and preserves the server', t => {
+test('redesign preserves added regression tests, reviewed UI/story paths and the server', t => {
   const { cwd, definition } = fixture(t);
   applyFeature(cwd, definition);
   const baseTree = git(cwd, ['write-tree']);
   mkdirSync(join(cwd, 'ui/storybook/stories'), { recursive: true });
   writeFileSync(join(cwd, 'ui/src/view.txt'), 'Guided task input\n');
+  const regression = 'import { expect, test } from "vitest";\ntest("stable translated status", () => expect(true).toBe(true));\n';
+  writeFileSync(join(cwd, 'ui/src/view.test.ts'), regression);
   writeFileSync(join(cwd, 'ui/storybook/stories/klar.stories.tsx'), 'export const Preview = {};\n');
   git(cwd, ['add', 'ui']);
   const resultTree = git(cwd, ['write-tree']);
@@ -113,10 +115,12 @@ test('redesign accepts only the reviewed UI/story paths and preserves the server
   const patchPath = join(cwd, 'redesign.patch');
   writeFileSync(patchPath, patch);
   git(cwd, ['restore', '--source', baseTree, '--staged', '--worktree', '--', 'ui']);
-  const design = { baseTree, resultTree, sha256: createHash('sha256').update(patch).digest('hex'), paths: ['ui/src/view.txt', 'ui/storybook/stories/klar.stories.tsx'] };
+  const design = { baseTree, resultTree, sha256: createHash('sha256').update(patch).digest('hex'), paths: ['ui/src/view.test.ts', 'ui/src/view.txt', 'ui/storybook/stories/klar.stories.tsx'] };
   assert.throws(() => applyLocale(cwd, design, patchPath), /only change UI source/);
   assert.throws(() => applyRedesign(cwd, { ...design, paths: ['server.txt'] }, patchPath), /reviewed scope/);
+  assert.throws(() => applyRedesign(cwd, { ...design, paths: design.paths.filter(path => !path.endsWith('.test.ts')) }, patchPath), /reviewed scope/);
   applyRedesign(cwd, design, patchPath);
   assert.equal(git(cwd, ['write-tree']), resultTree);
+  assert.equal(readFileSync(join(cwd, 'ui/src/view.test.ts'), 'utf8'), regression);
   assert.equal(readFileSync(join(cwd, 'server.txt'), 'utf8'), 'new production server\n');
 });
