@@ -7,6 +7,13 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
+  it("keeps Klar links and mobile navigation scoped to the selected company", () => {
+    expect(isBoardPathWithoutPrefix("/klar")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/klar")).toBeNull();
+    expect(applyCompanyPrefix("/klar", "PAP")).toBe("/PAP/klar");
+    expect(toCompanyRelativePath("/PAP/klar")).toBe("/klar");
+    expect(applyCompanyPrefix("/OTHER/klar", "PAP")).toBe("/OTHER/klar");
+  });
   it("treats execution workspace paths as board routes that need a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123")).toBe(true);
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123/routines")).toBe(true);
