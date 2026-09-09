@@ -501,6 +501,157 @@ index 0000000000000000000000000000000000000000..5b8a53a46156f38a631f225847e7759b
 +  </div>;
 +}
 \ No newline at end of file
+diff --git a/ui/src/components/KlarNewTask.test.tsx b/ui/src/components/KlarNewTask.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ac061bb6b4739e1bab1c25a11bdff407a454ee9
+--- /dev/null
++++ b/ui/src/components/KlarNewTask.test.tsx
+@@ -0,0 +1,65 @@
++// @vitest-environment jsdom
++import { act, useState } from "react";
++import { createRoot, type Root } from "react-dom/client";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { afterEach, beforeEach, expect, it, vi } from "vitest";
++import type { Agent } from "@paperclipai/shared";
++import { KlarNewTask } from "./KlarNewTask";
++import { ApiError } from "../api/client";
++
++const api = vi.hoisted(() => ({ create: vi.fn() }));
++vi.mock("../api/issues", () => ({ issuesApi: api }));
++let root: Root, host: HTMLDivElement, client: QueryClient;
++const team = [{ id: "atlas", companyId: "c", name: "Atlas", status: "idle", role: "engineer" }, { id: "lead", companyId: "c", name: "Leitung", status: "running", role: "ceo" }] as Agent[];
++function Harness() {
++  const [draft, setDraft] = useState("");
++  return <KlarNewTask companyId="c" agents={team} ready open onOpenChange={() => {}} draft={draft} onDraftChange={setDraft} onCreated={() => {}} />;
++}
++async function fill(text: string) {
++  await act(async () => {
++    const field = document.querySelector("textarea")!;
++    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text);
++    field.dispatchEvent(new Event("input", { bubbles: true }));
++  });
++}
++beforeEach(async () => {
++  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
++  api.create.mockReset();
++  client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
++  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
++  await act(async () => root.render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>));
++});
++afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); });
++
++it("offers just one field and submits the full message at highest priority once on Enter", async () => {
++  let finish!: (value: unknown) => void;
++  api.create.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
++  expect(document.querySelectorAll("textarea")).toHaveLength(1);
++  expect(document.querySelectorAll("input, select")).toHaveLength(0);
++  await fill("Aufgabe für Atlas, prüfe die Lieferzeiten.");
++  await act(async () => {
++    const field = document.querySelector("textarea")!;
++    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
++    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
++  });
++  expect(api.create).toHaveBeenCalledTimes(1);
++  expect(api.create).toHaveBeenCalledWith("c", expect.objectContaining({ assigneeAgentId: "atlas", priority: "critical", description: "Aufgabe für Atlas, prüfe die Lieferzeiten." }));
++  expect(api.create.mock.calls[0][1]).not.toHaveProperty("projectId");
++  await act(async () => finish({ assigneeAgentId: "atlas" }));
++  await vi.waitFor(() => expect(document.body.textContent).toContain("Aufgabe für Atlas gespeichert."));
++  expect(document.querySelector("textarea")!.value).toBe("");
++});
++it("does not submit while inserting a line break or confirming composition", async () => {
++  await fill("Bitte prüfen");
++  for (const modifiers of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }, { repeat: true }]) {
++    await act(async () => { document.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifiers })); });
++  }
++  expect(api.create).not.toHaveBeenCalled();
++});
++it("keeps the message after an expired login", async () => {
++  api.create.mockRejectedValue(new ApiError("Unauthorized", 401, {}));
++  await fill("Bitte die Angebote vergleichen");
++  await act(async () => { document.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(); });
++  await vi.waitFor(() => expect(document.body.textContent).toContain("Anmeldung ist abgelaufen"));
++  expect(document.querySelector("textarea")!.value).toBe("Bitte die Angebote vergleichen");
++});
+diff --git a/ui/src/components/KlarNewTask.tsx b/ui/src/components/KlarNewTask.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..0c2b31935aa225a2419e3676e83a33795c0498d9
+--- /dev/null
++++ b/ui/src/components/KlarNewTask.tsx
+@@ -0,0 +1,74 @@
++import { useRef, useState } from "react";
++import { useMutation } from "@tanstack/react-query";
++import type { Agent } from "@paperclipai/shared";
++import { ArrowUp, Loader2, X } from "lucide-react";
++import { issuesApi } from "../api/issues";
++import { ApiError } from "../api/client";
++import { priorityTaskPayload } from "../lib/klar-chat";
++import { Button } from "./ui/button";
++import { Textarea } from "./ui/textarea";
++import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog";
++
++interface Props {
++  companyId: string;
++  agents: Agent[];
++  ready: boolean;
++  open: boolean;
++  onOpenChange: (open: boolean) => void;
++  draft: string;
++  onDraftChange: (text: string) => void;
++  onCreated: () => void;
++}
++
++export function KlarNewTask({ companyId, agents, ready, open, onOpenChange, draft, onDraftChange, onCreated }: Props) {
++  const input = useRef<HTMLTextAreaElement>(null);
++  const locked = useRef(false);
++  const [problem, setProblem] = useState("");
++  const [receipt, setReceipt] = useState("");
++  const send = useMutation({
++    mutationFn: (payload: ReturnType<typeof priorityTaskPayload>) => issuesApi.create(companyId, payload),
++    retry: false,
++    onSuccess: issue => {
++      onDraftChange("");
++      const owner = agents.find(agent => agent.companyId === companyId && agent.id === issue.assigneeAgentId);
++      setReceipt(owner ? `Aufgabe für ${owner.name} gespeichert.` : "Aufgabe gespeichert.");
++      onCreated();
++      input.current?.focus();
++    },
++    onError: error => setProblem(error instanceof ApiError && error.status === 401
++      ? "Deine Anmeldung ist abgelaufen. Dein Text bleibt erhalten."
++      : error instanceof ApiError && error.status === 403
++        ? "Dir fehlt die Berechtigung für diese Aufgabe. Dein Text bleibt erhalten."
++        : "Das Speichern konnte nicht bestätigt werden. Prüfe den Verlauf vor einem erneuten Versuch, damit nichts doppelt angelegt wird."),
++    onSettled: () => { locked.current = false; },
++  });
++  function submit() {
++    if (!draft.trim() || !ready || locked.current) return;
++    setProblem(""); setReceipt("");
++    try {
++      const payload = priorityTaskPayload(draft, companyId, agents);
++      locked.current = true;
++      send.mutate(payload);
++    } catch (error) {
++      setProblem(error instanceof Error ? error.message : "Die Aufgabe konnte nicht zugeordnet werden.");
++    }
++  }
++  return <Dialog open={open} onOpenChange={value => { if (!locked.current) onOpenChange(value); }}>
++    <DialogContent className="klar-theme klar-new-task-dialog" showCloseButton={false} onOpenAutoFocus={event => { event.preventDefault(); input.current?.focus(); }} onEscapeKeyDown={event => { if (locked.current) event.preventDefault(); }} onPointerDownOutside={event => { if (locked.current) event.preventDefault(); }}>
++      <DialogTitle className="sr-only">Neue Aufgabe</DialogTitle>
++      <DialogDescription className="sr-only">Schreibe deine Aufgabe. Sie bekommt die höchste Priorität. Du kannst einen Bot am Anfang nennen; sonst übernimmt der Koordinations-Bot.</DialogDescription>
++      <Button type="button" variant="ghost" size="icon" className="klar-new-task-close" disabled={send.isPending} onClick={() => onOpenChange(false)} aria-label="Eingabe schliessen"><X className="size-4" /></Button>
++      <form className="klar-new-task-form" onSubmit={event => { event.preventDefault(); submit(); }}>
++        <Textarea ref={input} className="klar-chat-input klar-new-task-input" aria-label="Deine Aufgabe" placeholder="Was soll erledigt werden?" value={draft} disabled={send.isPending} enterKeyHint="send" onChange={event => { onDraftChange(event.target.value); setProblem(""); setReceipt(""); }} onKeyDown={event => {
++          if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
++          event.preventDefault();
++          if (!event.repeat) submit();
++        }} />
++        <div className="klar-new-task-send"><Button type="submit" size="icon" className="rounded-full" aria-label="Aufgabe senden" disabled={!draft.trim() || !ready || send.isPending}>{send.isPending ? <Loader2 className="size-5 animate-spin" /> : <ArrowUp className="size-5" />}</Button></div>
++        {!ready && <p role="status" className="text-sm text-muted-foreground">Bot-Zuordnung wird geladen. Dein Text bleibt erhalten.</p>}
++        {problem && <p role="alert" className="text-sm text-destructive">{problem}</p>}
++        {receipt && <p role="status" className="text-sm text-muted-foreground">{receipt}</p>}
++      </form>
++    </DialogContent>
++  </Dialog>;
++}
 diff --git a/ui/src/components/Layout.test.tsx b/ui/src/components/Layout.test.tsx
 index 6cdd9b836321680606f2475c368b889bf37598a2..7d0289207a1289fdaf9045bb56cb3051f986b362 100644
 --- a/ui/src/components/Layout.test.tsx
@@ -860,10 +1011,10 @@ index 0000000000000000000000000000000000000000..9bbfcfd6439102568ab4c3676cc3dfe9
 +}
 \ No newline at end of file
 diff --git a/ui/src/index.css b/ui/src/index.css
-index 6e75451d1dabc72254e75a1101e8b7278e7cddf1..ca62e4f27096056b3fe13c0f44c0e6b8048401ee 100644
+index 6e75451d1dabc72254e75a1101e8b7278e7cddf1..8d25f9074ce264744653670e78eb85fb869b0a60 100644
 --- a/ui/src/index.css
 +++ b/ui/src/index.css
-@@ -2480,3 +2480,132 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
+@@ -2480,3 +2480,137 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
     * allow ui/src/pages/Projects.test.tsx — mock project color fixture
     * allow ui/src/pages/Routines.test.tsx — mock routine/label color fixtures
     ── end allowlist ── */
@@ -946,6 +1097,11 @@ index 6e75451d1dabc72254e75a1101e8b7278e7cddf1..ca62e4f27096056b3fe13c0f44c0e6b8
 +.klar-theme .klar-chat-input { min-height: var(--klar-chat-input); max-height: 10rem; border: 0; resize: vertical; background: transparent; box-shadow: none; padding: 0.4rem 0.5rem; line-height: 1.5; }
 +.klar-theme .klar-chat-input:focus-visible { box-shadow: none; outline: none; }
 +.klar-chat-composer:focus-within { border-color: var(--ring); }
++.klar-new-task-dialog { gap: 0; padding: 1rem; border-radius: var(--klar-radius); }
++.klar-new-task-form { display: flex; flex-direction: column; gap: 0.5rem; }
++.klar-new-task-close { position: absolute; top: 0.5rem; right: 0.5rem; }
++.klar-theme .klar-new-task-input { min-height: 9rem; max-height: 45dvh; margin-top: 2rem; }
++.klar-new-task-send { display: flex; justify-content: flex-end; }
 +.klar-send-row { display: flex; align-items: center; justify-content: space-between; gap: 0.25rem; }
 +.klar-composer-mode { margin-left: auto; margin-right: 0.5rem; color: var(--muted-foreground); font-size: 0.65rem; }
 +.klar-reply-target { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.5rem; font-size: 0.7rem; color: var(--muted-foreground); border-bottom: 1px solid var(--border); }
@@ -998,19 +1154,36 @@ index 6e75451d1dabc72254e75a1101e8b7278e7cddf1..ca62e4f27096056b3fe13c0f44c0e6b8
 +.klar-advanced-link { margin-top: auto; }
 diff --git a/ui/src/lib/klar-chat.test.ts b/ui/src/lib/klar-chat.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..a79691105e074c02f4bd750b42f88766d750c2d2
+index 0000000000000000000000000000000000000000..d90af9174b92b56aab3b3f54158250d602db0d7d
 --- /dev/null
 +++ b/ui/src/lib/klar-chat.test.ts
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,80 @@
 +import { describe, expect, it, vi, beforeEach } from "vitest";
 +import type { Agent, CompactIssue, IssueComment } from "@paperclipai/shared";
-+import { botRank, chatTimeline, decisionAgentId } from "./klar-chat";
++import { botRank, chatTimeline, decisionAgentId, newTaskAgent, priorityTaskPayload } from "./klar-chat";
 +import { sendKlarMessage, type KlarSendProgress } from "./klar-send";
 +const api = vi.hoisted(() => ({ create: vi.fn(), uploadAttachment: vi.fn(), update: vi.fn(), addComment: vi.fn() }));
 +vi.mock("../api/issues", () => ({ issuesApi: api }));
 +beforeEach(() => Object.values(api).forEach(mock => mock.mockReset()));
 +
 +describe("Klar chat rules", () => {
++  const team = [{ id: "atlas", companyId: "c", name: "Atlas", status: "idle", role: "engineer" }, { id: "lead", companyId: "c", name: "Leitung", status: "running", role: "ceo" }] as Agent[];
++  it("routes a named priority task without title, project or priority input fields", () => {
++    for (const text of ["Aufgabe für Atlas, vergleiche die Preise", "Atlas: vergleiche die Preise", "@Atlas vergleiche die Preise"]) {
++      expect(priorityTaskPayload(text, "c", team)).toEqual({ title: text, description: text, assigneeAgentId: "atlas", status: "todo", priority: "critical", workMode: "standard" });
++    }
++    expect(newTaskAgent("Vergleiche die Preise", "c", team).id).toBe("lead");
++  });
++  it("does not silently reroute unknown, ambiguous or unavailable named bots", () => {
++    expect(() => newTaskAgent("Aufgabe für Unbekannt, prüfen", "c", team)).toThrow("finde ich nicht");
++    expect(() => newTaskAgent("Atlas, prüfen", "c", [...team, { ...team[0], id: "duplicate" }])).toThrow("nicht eindeutig");
++    expect(() => newTaskAgent("Atlas, prüfen", "c", [{ ...team[0], status: "paused" }, team[1]])).toThrow("nicht einsatzbereit");
++    expect(() => newTaskAgent("Bitte prüfen", "c", [team[0]])).toThrow("nicht eindeutig");
++  });
++  it("cannot assign a new task to a bot or coordinator in another company", () => {
++    expect(() => newTaskAgent("Aufgabe für Atlas, prüfen", "other", team)).toThrow("finde ich nicht");
++    expect(() => newTaskAgent("Bitte prüfen", "other", team)).toThrow("nicht eindeutig");
++  });
 +  it("ranks decisions, working, stopped and idle bots in the requested order", () => {
 +    const make = (id: string, status: string) => ({ id, name: id, status }) as Agent;
 +    const bots = [make("idle", "idle"), make("error", "error"), make("busy", "running"), make("approval", "idle")];
@@ -1065,13 +1238,12 @@ index 0000000000000000000000000000000000000000..a79691105e074c02f4bd750b42f88766
 +    expect(api.addComment.mock.invocationCallOrder[0]).toBeGreaterThan(api.uploadAttachment.mock.invocationCallOrder[1]);
 +  });
 +});
-\ No newline at end of file
 diff --git a/ui/src/lib/klar-chat.ts b/ui/src/lib/klar-chat.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f6946c33110d47453bf4be25bb32b83accca964a
+index 0000000000000000000000000000000000000000..130ffca2dc4ae9b8910883ea3a60434509d1fccb
 --- /dev/null
 +++ b/ui/src/lib/klar-chat.ts
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,62 @@
 +import type { Agent, Approval, AttentionItem, CompactIssue, IssueComment } from "@paperclipai/shared";
 +import type { LiveRunForIssue } from "../api/heartbeats";
 +
@@ -1100,6 +1272,29 @@ index 0000000000000000000000000000000000000000..f6946c33110d47453bf4be25bb32b83a
 +  return { title: Array.from(body.split(/\r?\n/)[0]).slice(0, 160).join(""), description: body, assigneeAgentId: agentId, status: "todo", priority: "medium", workMode: "standard" };
 +}
 +
++/** Resolve only an explicit name at the start; otherwise use this company's CEO. */
++export function newTaskAgent(text: string, companyId: string, agents: Agent[]): Agent {
++  const team = agents.filter(agent => agent.companyId === companyId);
++  const body = text.trim();
++  const explicit = /^(?:(?:aufgabe|auftrag)\s+(?:für|an)\s+|@)/iu.test(body);
++  const address = body.replace(/^(?:aufgabe|auftrag)\s+(?:für|an)\s+/iu, "").replace(/^@/, "");
++  const named = team.filter(agent => {
++    const escaped = agent.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
++    return new RegExp(`^${escaped}(?:\\s|[:,.!?]|$)`, "iu").test(address);
++  }).sort((a, b) => b.name.length - a.name.length);
++  if (explicit && !named.length) throw new Error("Diesen Bot finde ich nicht. Nenne seinen vollständigen Namen am Anfang der Nachricht.");
++  const candidates = named.length ? named.filter(agent => agent.name.length === named[0].name.length) : team.filter(agent => agent.role === "ceo");
++  if (candidates.length !== 1) throw new Error(named.length ? "Der Bot-Name ist nicht eindeutig. Bitte verwende einen eindeutigen Namen." : "Die automatische Zuordnung ist nicht eindeutig. Beginne mit dem Namen eines Bots, zum Beispiel: Atlas, …");
++  const agent = candidates[0];
++  if (!["idle", "active", "running"].includes(agent.status)) throw new Error(`${agent.name} ist gerade nicht einsatzbereit. Deine Nachricht bleibt erhalten.`);
++  return agent;
++}
++
++export function priorityTaskPayload(text: string, companyId: string, agents: Agent[]) {
++  const agent = newTaskAgent(text, companyId, agents);
++  return { ...chatTaskPayload(text, agent.id), priority: "critical" };
++}
++
 +export type KlarReplyTarget = Pick<CompactIssue, "id" | "companyId" | "assigneeAgentId" | "identifier" | "title" | "status">;
 +export type ChatEvent = { id: string; at: Date; task: CompactIssue; comment?: IssueComment };
 +export function chatTimeline(tasks: CompactIssue[], comments: IssueComment[]): ChatEvent[] {
@@ -1111,7 +1306,6 @@ index 0000000000000000000000000000000000000000..f6946c33110d47453bf4be25bb32b83a
 +  }
 +  return events.sort((a, b) => a.at.getTime() - b.at.getTime() || a.id.localeCompare(b.id));
 +}
-\ No newline at end of file
 diff --git a/ui/src/lib/klar-send.ts b/ui/src/lib/klar-send.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..901190986387865860dfc6f8bb78aec99747cf67
@@ -1151,7 +1345,7 @@ index 0000000000000000000000000000000000000000..901190986387865860dfc6f8bb78aec9
 +}
 \ No newline at end of file
 diff --git a/ui/src/pages/PaperclipKlar.tsx b/ui/src/pages/PaperclipKlar.tsx
-index 60633421e6ff8e1fa1f85b7799025270afffc4d5..fd61b93c65381b761dda2f6bf957c5498611a5e8 100644
+index 60633421e6ff8e1fa1f85b7799025270afffc4d5..dff2c28d6f0d5196d88b650d1a8ae0d2f4e7f748 100644
 --- a/ui/src/pages/PaperclipKlar.tsx
 +++ b/ui/src/pages/PaperclipKlar.tsx
 @@ -1,94 +1,105 @@
@@ -1163,7 +1357,7 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..fd61b93c65381b761dda2f6bf957c549
 +import { Link, useNavigate } from "@/lib/router";
  import { useCompany } from "../context/CompanyContext";
  import { useBreadcrumbs } from "../context/BreadcrumbContext";
- import { useDialogActions } from "../context/DialogContext";
+-import { useDialogActions } from "../context/DialogContext";
 -import { dashboardApi } from "../api/dashboard";
 +import { issuesApi } from "../api/issues";
  import { agentsApi } from "../api/agents";
@@ -1179,7 +1373,7 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..fd61b93c65381b761dda2f6bf957c549
 +import { botLabels, botRank, decisionAgentId, isRunning, needsApproval } from "../lib/klar-chat";
 +import { KlarBotChat, type ChatDraft } from "../components/KlarBotChat";
 +import { KlarApproval, KlarAttention } from "../components/KlarDecision";
-+import { NewIssueDialog } from "../components/NewIssueDialog";
++import { KlarNewTask } from "../components/KlarNewTask";
  import { Button } from "../components/ui/button";
 -import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 +import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
@@ -1202,9 +1396,7 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..fd61b93c65381b761dda2f6bf957c549
 -
  function CompanyKlar({ companyId }: { companyId: string }) {
 -  const { selectedCompany } = useCompany();
-+  const { companies, setSelectedCompanyId } = useCompany();
-+  const navigate = useNavigate();
-   const { openNewIssue } = useDialogActions();
+-  const { openNewIssue } = useDialogActions();
 -  const [tab, setTab] = useState("overview");
 -  const [taskView, setTaskView] = useState("open");
 -  const summary = useQuery({
@@ -1262,6 +1454,10 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..fd61b93c65381b761dda2f6bf957c549
 -        <div className="flex flex-wrap gap-4"><Button asChild variant="outline"><Link to="/skills">Gemeinsame Skills öffnen</Link></Button><Button asChild variant="outline"><Link to="/approvals">Freigaben prüfen</Link></Button><Button asChild variant="outline"><Link to="/artifacts">Ergebnisse öffnen</Link></Button></div>
 -      </TabsContent>
 -    </Tabs>
++  const { companies, setSelectedCompanyId } = useCompany();
++  const navigate = useNavigate();
++  const [newTaskOpen, setNewTaskOpen] = useState(false);
++  const [newTaskDraft, setNewTaskDraft] = useState("");
 +  const [botId, setBotId] = useState<string | null>(null);
 +  const [drafts, setDrafts] = useState<Record<string, ChatDraft>>({});
 +  const [pending, setPending] = useState(false);
@@ -1282,7 +1478,7 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..fd61b93c65381b761dda2f6bf957c549
 +  const agentMap = useMemo(() => new Map(team.map(agent => [agent.id, agent])), [agents.data, companyId]);
 +  const unmatchedApprovals = pendingApprovals.filter(item => !item.requestedByAgentId || !agentMap.has(item.requestedByAgentId));
 +  const unmatchedDecisions = decisions.filter(item => !agentMap.has(decisionAgentId(item) ?? ""));
-+  const dirty = Object.values(drafts).some(draft => Boolean(draft.text.trim() || draft.files?.length));
++  const dirty = Boolean(newTaskDraft.trim()) || Object.values(drafts).some(draft => Boolean(draft.text.trim() || draft.files?.length));
 +  const busy = agents.isFetching || approvals.isFetching || attention.isFetching || runs.isFetching;
 +  function refresh() { void agents.refetch(); void approvals.refetch(); void attention.refetch(); void runs.refetch(); void work.refetch(); }
 +  const canLeave = () => !pending && (!dirty || window.confirm("Du hast noch ungesendete Nachrichten. Möchtest du diese Ansicht trotzdem verlassen?"));
@@ -1304,7 +1500,7 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..fd61b93c65381b761dda2f6bf957c549
 +        <Button variant="ghost" disabled={pending} onClick={() => setBotId(null)} className="justify-start"><MessageCircle className="size-5" />Bot-Chats</Button>
 +        <Button variant="ghost" asChild className="justify-start"><Link to="/inbox" onClick={event => { if (!canLeave()) event.preventDefault(); }}><Inbox className="size-5" />Posteingang</Link></Button>
 +        <Button variant="ghost" asChild className="justify-start"><Link to="/dashboard" onClick={event => { if (!canLeave()) event.preventDefault(); }}><LayoutDashboard className="size-5" />Armaturenbrett</Link></Button>
-+        <Button variant="ghost" disabled={pending} onClick={() => openNewIssue({ language: "de" })} className="justify-start"><SquarePen className="size-5" />Neue Aufgabe</Button>
++        <Button variant="ghost" disabled={pending} onClick={() => setNewTaskOpen(true)} className="justify-start"><SquarePen className="size-5" />Neue Aufgabe</Button>
 +      </nav>
 +    </aside>
 +    <div className="klar-chat-main">
@@ -1312,7 +1508,7 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..fd61b93c65381b761dda2f6bf957c549
 +        <DropdownMenuItem disabled={pending} onSelect={() => setBotId(null)}><MessageCircle className="size-4" />Bot-Chats</DropdownMenuItem>
 +        <DropdownMenuItem asChild><Link to="/inbox" onClick={event => { if (!canLeave()) event.preventDefault(); }}><Inbox className="size-4" />Posteingang</Link></DropdownMenuItem>
 +        <DropdownMenuItem asChild><Link to="/dashboard" onClick={event => { if (!canLeave()) event.preventDefault(); }}><LayoutDashboard className="size-4" />Armaturenbrett</Link></DropdownMenuItem>
-+        <DropdownMenuItem disabled={pending} onSelect={() => openNewIssue({ language: "de" })}><SquarePen className="size-4" />Neue Aufgabe</DropdownMenuItem>
++        <DropdownMenuItem disabled={pending} onSelect={() => setNewTaskOpen(true)}><SquarePen className="size-4" />Neue Aufgabe</DropdownMenuItem>
 +        <DropdownMenuSeparator />
 +        <DropdownMenuItem asChild><Link to="/agents/new" onClick={event => { if (!canLeave()) event.preventDefault(); }}><Plus className="size-4" />Bot hinzufügen</Link></DropdownMenuItem>
 +        <DropdownMenuItem asChild><Link to="/company/settings/instance/profile" onClick={event => { if (!canLeave()) event.preventDefault(); }}>Mein Konto</Link></DropdownMenuItem>
@@ -1333,12 +1529,12 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..fd61b93c65381b761dda2f6bf957c549
 +        {!agents.isPending && !agents.isError && team.length === 0 && <div className="klar-empty-chat"><Bot className="size-8" /><p>Dein erster Bot wartet auf seinen Einsatz.</p>{!team.length && <Button asChild><Link to="/agents/new"><Plus className="size-4" />Bot hinzufügen</Link></Button>}</div>}
 +      </section>}
 +    </div>
-+    <NewIssueDialog />
++    <KlarNewTask companyId={companyId} agents={team} ready={agents.isSuccess && !agents.isError} open={newTaskOpen} onOpenChange={setNewTaskOpen} draft={newTaskDraft} onDraftChange={setNewTaskDraft} onCreated={refresh} />
    </div>;
  }
 diff --git a/ui/storybook/stories/klar-workspace.stories.tsx b/ui/storybook/stories/klar-workspace.stories.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..3126bef78a06cf24d9432bcc71c1929df47329b6
+index 0000000000000000000000000000000000000000..3cb005393aaf1af03c1c1e4108f069b81f6ca11d
 --- /dev/null
 +++ b/ui/storybook/stories/klar-workspace.stories.tsx
 @@ -0,0 +1,96 @@
@@ -1368,7 +1564,7 @@ index 0000000000000000000000000000000000000000..3126bef78a06cf24d9432bcc71c1929d
 +      { ...storybookAgents[0], id: "klar-nora", name: "Nora", title: "Entwicklung & Design", status: "running", capabilities: "Entwickelt und verbessert deine Webseite." },
 +      { ...storybookAgents[0], id: "klar-atlas", name: "Atlas", title: "Recherche & Wissen", status: "running" },
 +      { ...storybookAgents[1], id: "klar-lina", name: "Lina", title: "Qualität & Sicherheit", status: "error" },
-+      { ...storybookAgents[2], id: "klar-echo", name: "Echo", title: "Deine Assistenz", status: "idle" },
++      { ...storybookAgents[2], id: "klar-echo", name: "Echo", title: "Deine Assistenz", role: "ceo", status: "idle" },
 +    ];
 +    let demoTasks = [
 +      { ...storybookIssues[0], id: "klar-task-1", identifier: "DEMO-1", companyId, assigneeAgentId: "klar-nora", title: "Mach die Kontaktseite einfacher", description: "Die Kontaktseite soll auf dem Handy übersichtlich sein. Ein kurzer Text und eine klare Möglichkeit zur Kontaktaufnahme reichen.", status: "in_review", createdAt: time(45), updatedAt: time(4) },
@@ -1438,4 +1634,3 @@ index 0000000000000000000000000000000000000000..3126bef78a06cf24d9432bcc71c1929d
 +}
 +export const GuidedWorkspace: Story = { render: () => <KlarPreview /> };
 +export const BotChats: Story = { render: () => <KlarPreview /> };
-\ No newline at end of file

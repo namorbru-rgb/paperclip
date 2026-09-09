@@ -28,7 +28,7 @@
     "ui/src/pages/PaperclipKlar.tsx"
   ],
   "redesignPatch": {
-    "sha256": "dc4263251108c2ab0af441ee9f04fa9f8e68ffd729a2929e318eddb27e7a2e59",
+    "sha256": "e10d0cd483c26007d99817e6560d525d3fca3690cf80b4f91f7c54553ad3a3e5",
     "baseTree": "89ad4ba19a6aa4d440842c09634604405d95105a",
     "paths": [
       "ui/src/components/KlarAttachments.tsx",
@@ -38,6 +38,8 @@
       "ui/src/components/KlarComposer.tsx",
       "ui/src/components/KlarDecision.tsx",
       "ui/src/components/KlarFilePreview.tsx",
+      "ui/src/components/KlarNewTask.test.tsx",
+      "ui/src/components/KlarNewTask.tsx",
       "ui/src/components/Layout.test.tsx",
       "ui/src/components/Layout.tsx",
       "ui/src/components/WorkOverview.tsx",
@@ -51,6 +53,6 @@
       "ui/src/pages/PaperclipKlar.tsx",
       "ui/storybook/stories/klar-workspace.stories.tsx"
     ],
-    "resultTree": "ab07334b294d527881cac6fd5e659fd4702a6971"
+    "resultTree": "02e2622605de9aa315d1a57d8bc38a8b12e21c7c"
   }
 }
