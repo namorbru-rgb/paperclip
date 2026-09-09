@@ -1,3 +1,25 @@
+diff --git a/ui/src/assets/klar.webmanifest b/ui/src/assets/klar.webmanifest
+new file mode 100644
+index 0000000000000000000000000000000000000000..a90c2066b877350e83241b40ffe2e5c53f6ed462
+--- /dev/null
++++ b/ui/src/assets/klar.webmanifest
+@@ -0,0 +1,16 @@
++{
++  "id": "/klar",
++  "name": "Paperclip Klar",
++  "short_name": "Paperclip Klar",
++  "description": "Deine Bots, Aufgaben und Freigaben an einem Ort.",
++  "lang": "de-CH",
++  "start_url": "/klar",
++  "scope": "/",
++  "display": "standalone",
++  "theme_color": "#2563eb",
++  "background_color": "#ffffff",
++  "icons": [
++    { "src": "/android-chrome-192x192.png", "sizes": "192x192", "type": "image/png" },
++    { "src": "/android-chrome-512x512.png", "sizes": "512x512", "type": "image/png" }
++  ]
++}
 diff --git a/ui/src/components/KlarAttachments.tsx b/ui/src/components/KlarAttachments.tsx
 new file mode 100644
 index 0000000000000000000000000000000000000000..cb2a9bf2c5174620f21306a06def65e3aff4a908
@@ -78,20 +100,21 @@ index 0000000000000000000000000000000000000000..8b4dc532fc0f45062bec278f157f6c98
 +});
 diff --git a/ui/src/components/KlarBotChat.tsx b/ui/src/components/KlarBotChat.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..12990f4f70706650c256d4af5bffd06efa7fdf58
+index 0000000000000000000000000000000000000000..3b755e48ad564a4865470a49907ae9c5082dee79
 --- /dev/null
 +++ b/ui/src/components/KlarBotChat.tsx
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,92 @@
 +import { useEffect, useMemo, useRef, useState } from "react";
-+import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
-+import type { Agent, CompactIssue } from "@paperclipai/shared";
-+import { ArrowLeft, CornerUpLeft, Info, Plus } from "lucide-react";
++import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
++import type { Agent, CompactIssue, IssueComment } from "@paperclipai/shared";
++import { ArrowDown, ArrowLeft, CornerUpLeft, Info, Plus } from "lucide-react";
 +import { Link } from "@/lib/router";
 +import { issuesApi } from "../api/issues";
 +import { queryKeys } from "../lib/queryKeys";
 +import { botLabels, chatTimeline, taskLabels, type KlarReplyTarget } from "../lib/klar-chat";
 +import { KlarAttachments } from "./KlarAttachments";
 +import { KlarComposer } from "./KlarComposer";
++import { useKlarChatScroll } from "./useKlarChatScroll";
 +import { MarkdownBody } from "./MarkdownBody";
 +import { Button } from "./ui/button";
 +import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
@@ -104,11 +127,11 @@ index 0000000000000000000000000000000000000000..12990f4f70706650c256d4af5bffd06e
 +  onBack: () => void; onResolved: () => void; onPendingChange: (pending: boolean) => void;
 +}
 +export function KlarBotChat({ companyId, agent, agents, currentUserId, draft, onDraftChange, onBack, onResolved, onPendingChange }: Props) {
++  const queryClient = useQueryClient();
 +  const [details, setDetails] = useState<CompactIssue | null>(null);
 +  const [showBot, setShowBot] = useState(false);
 +  const [pending, setPending] = useState(false);
 +  const [commentLimit, setCommentLimit] = useState(12);
-+  const bottom = useRef<HTMLDivElement>(null);
 +  const sent = useRef(false);
 +  const tasks = useInfiniteQuery({
 +    queryKey: [...queryKeys.issues.list(companyId), "klar-chat", agent.id],
@@ -121,22 +144,33 @@ index 0000000000000000000000000000000000000000..12990f4f70706650c256d4af5bffd06e
 +  const comments = useQueries({ queries: loadedTasks.map(task => ({
 +    queryKey: [...queryKeys.issues.comments(task.id), "klar-chat", commentLimit],
 +    queryFn: () => issuesApi.listComments(task.id, { order: "desc", limit: commentLimit }),
++    placeholderData: () => queryClient.getQueriesData<IssueComment[]>({ queryKey: [...queryKeys.issues.comments(task.id), "klar-chat"] }).map(([, data]) => data).filter((data): data is IssueComment[] => !!data).sort((a, b) => b.length - a.length)[0],
 +    refetchInterval: 15_000,
 +  })) });
 +  const attachmentQueries = useQueries({ queries: loadedTasks.map(task => ({ queryKey: queryKeys.issues.attachments(task.id), queryFn: () => issuesApi.listAttachments(task.id), refetchInterval: 30_000 })) });
 +  const attachments = attachmentQueries.flatMap(query => query.data ?? []).filter(file => file.companyId === companyId);
 +  const allComments = comments.flatMap(query => query.data ?? []);
 +  const timeline = chatTimeline(loadedTasks, comments.flatMap(query => query.data ?? []));
++  const historyReady = !tasks.isPending && !comments.some(query => query.isPending);
++  const contentKey = JSON.stringify([timeline.map(event => [event.id, event.comment?.body ?? event.task.title]), attachments.map(file => file.id)]);
++  const { scrollRef, onScroll, onMediaLoad, jumpToLatest, showLatest } = useKlarChatScroll(contentKey, historyReady);
++  function onHistoryScroll() {
++    onScroll();
++    const scroll = scrollRef.current;
++    if (!scroll || scroll.scrollTop > 48 || scroll.scrollHeight - scroll.clientHeight < 72 || !historyReady || tasks.isFetching || comments.some(query => query.isFetching)) return;
++    if (comments.some(query => (query.data?.length ?? 0) >= commentLimit)) setCommentLimit(limit => limit + 24);
++    else if (tasks.hasNextPage) void tasks.fetchNextPage();
++  }
 +  const agentMap = useMemo(() => new Map(agents.map(item => [item.id, item])), [agents]);
 +  const fullTask = useQuery({ queryKey: queryKeys.issues.detail(details?.id ?? ""), queryFn: () => issuesApi.get(details!.id), enabled: !!details });
 +  const refresh = () => { void tasks.refetch(); for (const query of comments) void query.refetch(); for (const query of attachmentQueries) void query.refetch(); onResolved(); };
-+  useEffect(() => { if (sent.current) { bottom.current?.scrollIntoView?.({ block: "end", behavior: "smooth" }); sent.current = false; } }, [timeline.length]);
++  useEffect(() => { if (sent.current) { jumpToLatest(); sent.current = false; } }, [contentKey]);
 +  const reply = (task: CompactIssue) => { if (!pending && !draft.progress) onDraftChange({ ...draft, replyTo: task }); };
 +  const currentReply = draft.replyTo ? loadedTasks.find(task => task.id === draft.replyTo?.id) ?? draft.replyTo : null;
 +
 +  return <section className="klar-conversation" aria-label={`Chat mit ${agent.name}`}>
 +    <header className="klar-chat-header"><Button variant="ghost" size="icon" disabled={pending} onClick={onBack} aria-label="Zur Bot-Übersicht"><ArrowLeft className="size-5" /></Button><span className="klar-avatar">{agent.name.slice(0, 2).toUpperCase()}</span><div className="min-w-0 flex-1"><h1 className="font-semibold truncate">{agent.name}</h1><p className="text-xs text-muted-foreground">{botLabels[agent.status] ?? "Status unbekannt"}</p></div><Button variant="ghost" size="icon" onClick={() => setShowBot(true)} aria-label="Bot-Details"><Info className="size-5" /></Button></header>
-+    <div className="klar-chat-scroll">
++    <div className="klar-chat-scroll" ref={scrollRef} onScroll={onHistoryScroll} onLoadCapture={onMediaLoad}>
 +      <div className="klar-chat-stream" aria-label="Nachrichten">
 +        {tasks.hasNextPage && <Button variant="ghost" disabled={tasks.isFetchingNextPage} onClick={() => { void tasks.fetchNextPage(); }}>Ältere Aufgaben laden</Button>}
 +        {tasks.isPending && <p role="status">Gespräch wird geladen…</p>}
@@ -156,9 +190,8 @@ index 0000000000000000000000000000000000000000..12990f4f70706650c256d4af5bffd06e
 +        })}
 +        {comments.some(query => (query.data?.length ?? 0) >= commentLimit) && <Button variant="ghost" onClick={() => setCommentLimit(limit => limit + 24)}>Weitere Antworten laden</Button>}
 +      </div>
-+      <div ref={bottom} />
 +    </div>
-+    <div className="klar-composer-dock">{draft.replyTo && <Button variant="ghost" size="sm" disabled={pending || !!draft.progress} onClick={() => onDraftChange({ ...draft, replyTo: null })}><Plus className="size-4" />Als neue Aufgabe schreiben</Button>}<KlarComposer companyId={companyId} agent={agent} replyTo={currentReply} draft={draft.text} files={draft.files} savedProgress={draft.progress} onProgressChange={progress => onDraftChange({ ...draft, progress })} onFilesChange={files => onDraftChange({ ...draft, files })} onDraftChange={text => onDraftChange({ ...draft, text })} onClearReply={() => onDraftChange({ ...draft, replyTo: null })} onSent={issue => { sent.current = true; onDraftChange({ text: "", files: [], replyTo: issue ?? draft.replyTo }); refresh(); }} onPendingChange={value => { setPending(value); onPendingChange(value); }} /></div>
++    <div className="klar-composer-dock">{showLatest && <Button type="button" className="klar-jump-latest" size="icon" onClick={jumpToLatest} aria-label="Zur neuesten Nachricht"><ArrowDown className="size-5" /></Button>}{draft.replyTo && <Button variant="ghost" size="sm" disabled={pending || !!draft.progress} onClick={() => onDraftChange({ ...draft, replyTo: null })}><Plus className="size-4" />Als neue Aufgabe schreiben</Button>}<KlarComposer companyId={companyId} agent={agent} replyTo={currentReply} draft={draft.text} files={draft.files} savedProgress={draft.progress} onProgressChange={progress => onDraftChange({ ...draft, progress })} onFilesChange={files => onDraftChange({ ...draft, files })} onDraftChange={text => onDraftChange({ ...draft, text })} onClearReply={() => onDraftChange({ ...draft, replyTo: null })} onSent={issue => { sent.current = true; onDraftChange({ text: "", files: [], replyTo: issue ?? draft.replyTo }); refresh(); }} onPendingChange={value => { setPending(value); onPendingChange(value); }} /></div>
 +    <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}><DialogContent lang="de-CH" translate="no" className="klar-theme klar-details notranslate"><DialogHeader><DialogTitle>{details?.title}</DialogTitle><DialogDescription>{details?.identifier} · {details ? taskLabels[details.status] : ""}</DialogDescription></DialogHeader>{fullTask.isPending ? <p>Aufgabe wird geladen…</p> : fullTask.isError || fullTask.data?.companyId !== companyId ? <p role="alert">Die Details konnten nicht geladen werden.</p> : <MarkdownBody>{fullTask.data.description ?? "Keine zusätzliche Beschreibung."}</MarkdownBody>}<div className="flex flex-wrap gap-2"><Button disabled={pending} onClick={() => { if (details) reply(details); setDetails(null); }}><CornerUpLeft className="size-4" />Darauf antworten</Button><Button variant="outline" asChild><Link to={`/issues/${details?.identifier ?? details?.id}`}>Alle Aufgabendetails</Link></Button></div></DialogContent></Dialog>
 +    <Dialog open={showBot} onOpenChange={setShowBot}><DialogContent lang="de-CH" translate="no" className="klar-theme klar-details notranslate"><DialogHeader><DialogTitle>{agent.name}</DialogTitle><DialogDescription>{agent.title || "Dein Bot"}</DialogDescription></DialogHeader><p>{botLabels[agent.status]}</p>{agent.capabilities && <MarkdownBody>{agent.capabilities}</MarkdownBody>}<Button variant="outline" asChild><Link to={`/agents/${agent.id}`}>Bot-Einstellungen öffnen</Link></Button></DialogContent></Dialog>
 +  </section>;
@@ -483,6 +516,89 @@ index 0000000000000000000000000000000000000000..5b8a53a46156f38a631f225847e7759b
 +  </div>;
 +}
 \ No newline at end of file
+diff --git a/ui/src/components/KlarInstall.test.tsx b/ui/src/components/KlarInstall.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..2da973c6762a087d4c393ca8a035a77f5da291ad
+--- /dev/null
++++ b/ui/src/components/KlarInstall.test.tsx
+@@ -0,0 +1,34 @@
++// @vitest-environment jsdom
++import { act } from 'react';
++import { createRoot } from 'react-dom/client';
++import { readFileSync } from 'node:fs';
++import { resolve } from 'node:path';
++import { expect, it } from 'vitest';
++import { useKlarInstallMetadata } from './KlarInstall';
++
++it('installs Klar metadata and restores the native app metadata on exit', async () => {
++  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
++  const originalHead = document.head.innerHTML;
++  const host = document.createElement('div'); document.body.append(host);
++  const root = createRoot(host);
++  function Harness() { useKlarInstallMetadata(); return null; }
++  try {
++    document.head.innerHTML = '<link rel="manifest" href="/site.webmanifest" crossorigin="use-credentials"><meta name="apple-mobile-web-app-title" content="Paperclip">';
++    await act(async () => root.render(<Harness />));
++    expect(document.querySelector('link[rel="manifest"]')?.getAttribute('href')).toContain('klar.webmanifest');
++    expect(document.querySelector('link[rel="manifest"]')?.getAttribute('crossorigin')).toBe('use-credentials');
++    expect(document.querySelector('meta[name="apple-mobile-web-app-title"]')?.getAttribute('content')).toBe('Paperclip Klar');
++    expect(document.querySelector('meta[name="apple-mobile-web-app-capable"]')?.getAttribute('content')).toBe('yes');
++    await act(async () => root.render(null));
++    expect(document.querySelector('link[rel="manifest"]')?.getAttribute('href')).toBe('/site.webmanifest');
++    expect(document.querySelector('meta[name="apple-mobile-web-app-capable"]')).toBeNull();
++  } finally {
++    await act(async () => root.unmount()); host.remove(); document.head.innerHTML = originalHead;
++  }
++});
++
++it('opens the installed app at Klar and supplies existing app icons', () => {
++  const manifest = JSON.parse(readFileSync(resolve('src/assets/klar.webmanifest'), 'utf8'));
++  expect(manifest).toMatchObject({ id: '/klar', name: 'Paperclip Klar', display: 'standalone', start_url: '/klar', scope: '/' });
++  for (const icon of manifest.icons) expect(readFileSync(resolve('public', icon.src.slice(1))).length).toBeGreaterThan(0);
++});
+diff --git a/ui/src/components/KlarInstall.tsx b/ui/src/components/KlarInstall.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc6e57ee257bcddac14bb39fb7e4df1ea677c9f7
+--- /dev/null
++++ b/ui/src/components/KlarInstall.tsx
+@@ -0,0 +1,37 @@
++import { useEffect } from "react";
++import manifestUrl from "../assets/klar.webmanifest?url&no-inline";
++import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
++
++export function useKlarInstallMetadata() {
++  useEffect(() => {
++    const restore: (() => void)[] = [];
++    function set(selector: string, tag: 'meta' | 'link', attrs: Record<string, string>) {
++      const existing = document.head.querySelector(selector);
++      const element = existing ?? document.createElement(tag);
++      const previous = new Map(Object.keys(attrs).map(key => [key, element.getAttribute(key)]));
++      for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
++      if (!existing) document.head.append(element);
++      restore.push(() => {
++        if (!existing) { element.remove(); return; }
++        for (const [key, value] of previous) {
++          if (value === null) element.removeAttribute(key); else element.setAttribute(key, value);
++        }
++      });
++    }
++    set('link[rel="manifest"]', 'link', { rel: 'manifest', href: manifestUrl, crossorigin: 'use-credentials' });
++    set('meta[name="apple-mobile-web-app-title"]', 'meta', { name: 'apple-mobile-web-app-title', content: 'Paperclip Klar' });
++    set('meta[name="apple-mobile-web-app-capable"]', 'meta', { name: 'apple-mobile-web-app-capable', content: 'yes' });
++    set('meta[name="apple-mobile-web-app-status-bar-style"]', 'meta', { name: 'apple-mobile-web-app-status-bar-style', content: 'default' });
++    return () => restore.reverse().forEach(reset => reset());
++  }, []);
++}
++
++export function KlarInstallHelp({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
++  return <Dialog open={open} onOpenChange={onOpenChange}>
++    <DialogContent lang="de-CH" translate="no" className="klar-theme notranslate">
++      <DialogHeader><DialogTitle>Auf deinen Home-Bildschirm</DialogTitle><DialogDescription>Öffne Paperclip Klar auf deinem iPhone in Safari.</DialogDescription></DialogHeader>
++      <ol className="list-decimal pl-5 space-y-3"><li>Tippe in Safari auf „Teilen“.</li><li>Wähle „Zum Home-Bildschirm“.</li><li>Lasse „Als Web-App öffnen“ eingeschaltet, falls diese Auswahl erscheint.</li><li>Bestätige „Paperclip Klar“ mit „Hinzufügen“.</li></ol>
++      <p className="text-sm text-muted-foreground">Danach öffnest du deine Bots direkt über das App-Symbol.</p>
++    </DialogContent>
++  </Dialog>;
++}
 diff --git a/ui/src/components/KlarNewTask.test.tsx b/ui/src/components/KlarNewTask.test.tsx
 new file mode 100644
 index 0000000000000000000000000000000000000000..4ac061bb6b4739e1bab1c25a11bdff407a454ee9
@@ -830,6 +946,142 @@ index 588cfac87fec9b5a4f095fb219ba66648bf92f12..b865a1416b7a55402e2bf94b2ad5a98a
          </linearGradient>
        </defs>
      </svg>
+diff --git a/ui/src/components/useKlarChatScroll.test.tsx b/ui/src/components/useKlarChatScroll.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c34ab40805672ebcf160542f147fc734934162b
+--- /dev/null
++++ b/ui/src/components/useKlarChatScroll.test.tsx
+@@ -0,0 +1,57 @@
++// @vitest-environment jsdom
++import { act } from 'react';
++import { createRoot, type Root } from 'react-dom/client';
++import { afterEach, beforeEach, describe, expect, it } from 'vitest';
++import { useKlarChatScroll } from './useKlarChatScroll';
++
++let root: Root, host: HTMLDivElement;
++let ids: string[], ready: boolean;
++function Harness() {
++  const scroll = useKlarChatScroll(ids.join(','), ready);
++  return <><div ref={element => {
++    scroll.scrollRef.current = element;
++    if (!element) return;
++    let position = element.scrollTop;
++    Object.defineProperties(element, {
++      scrollHeight: { configurable: true, get: () => element.children.length * 200 },
++      clientHeight: { configurable: true, get: () => 400 },
++      scrollTop: { configurable: true, get: () => position, set: value => { position = Math.max(0, Math.min(value, element.scrollHeight - 400)); } },
++    });
++    element.getBoundingClientRect = () => ({ top: 0, bottom: 400 } as DOMRect);
++    [...element.children].forEach((item, index) => { item.getBoundingClientRect = () => ({ top: index * 200 - element.scrollTop, bottom: (index + 1) * 200 - element.scrollTop } as DOMRect); });
++  }} className="scroll" onScroll={scroll.onScroll} onLoadCapture={scroll.onMediaLoad}>{ids.map(id => <article key={id} data-message-id={id}>{id}</article>)}</div>{scroll.showLatest && <button onClick={scroll.jumpToLatest}>Latest</button>}</>;
++}
++const render = () => act(async () => root.render(<Harness />));
++const scroller = () => host.querySelector<HTMLDivElement>('.scroll')!;
++async function scrollTo(top: number) { await act(async () => { scroller().scrollTop = top; scroller().dispatchEvent(new Event('scroll', { bubbles: true })); }); }
++
++beforeEach(() => {
++  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
++  ids = ['a','b','c','d','e']; ready = true;
++  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
++});
++afterEach(async () => { await act(async () => root.unmount()); host.remove(); });
++
++describe('Klar chat position', () => {
++  it('opens at the newest message after late history arrives', async () => {
++    ready = false; ids = ['a']; await render();
++    ids = ['a','b','c','d','e']; ready = true; await render();
++    expect(scroller().scrollTop).toBe(600);
++    expect(host.querySelector('button')).toBeNull();
++  });
++  it('follows incoming messages while already at the bottom', async () => {
++    await render(); ids.push('f'); await render();
++    expect(scroller().scrollTop).toBe(800);
++  });
++  it('keeps the reader in older messages and offers one click back to latest', async () => {
++    await render(); await scrollTo(150); ids.push('f'); await render();
++    expect(scroller().scrollTop).toBe(150);
++    await act(async () => host.querySelector<HTMLButtonElement>('button')!.click());
++    expect(scroller().scrollTop).toBe(800);
++    expect(host.querySelector('button')).toBeNull();
++  });
++  it('keeps the same visible message when older history is prepended', async () => {
++    await render(); await scrollTo(150); ids.unshift('older'); await render();
++    expect(scroller().scrollTop).toBe(350);
++  });
++});
+diff --git a/ui/src/components/useKlarChatScroll.ts b/ui/src/components/useKlarChatScroll.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..fddd8c3074ab8d21192e03bd67f0f43c718dbcf5
+--- /dev/null
++++ b/ui/src/components/useKlarChatScroll.ts
+@@ -0,0 +1,67 @@
++import { useLayoutEffect, useRef, useState } from "react";
++
++/** Keep new messages visible without pulling readers away from older messages. */
++export function useKlarChatScroll(contentKey: string, ready: boolean) {
++  const scrollRef = useRef<HTMLDivElement>(null);
++  const following = useRef(true);
++  const firstLoad = useRef(true);
++  const anchor = useRef<{ id: string; top: number } | null>(null);
++  const [showLatest, setShowLatest] = useState(false);
++
++  function rememberAnchor() {
++    const scroll = scrollRef.current;
++    if (!scroll) return;
++    const top = scroll.getBoundingClientRect().top;
++    const message = [...scroll.querySelectorAll<HTMLElement>('[data-message-id]')]
++      .find(item => item.getBoundingClientRect().bottom > top);
++    anchor.current = message ? { id: message.dataset.messageId!, top: message.getBoundingClientRect().top - top } : null;
++  }
++
++  function jumpToLatest() {
++    const scroll = scrollRef.current;
++    following.current = true;
++    anchor.current = null;
++    if (scroll) scroll.scrollTop = scroll.scrollHeight;
++    setShowLatest(false);
++  }
++
++  function onScroll() {
++    const scroll = scrollRef.current;
++    if (!scroll) return;
++    following.current = scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 72;
++    if (!following.current) { firstLoad.current = false; rememberAnchor(); }
++    setShowLatest(!following.current);
++  }
++
++  function restoreAnchor() {
++    const scroll = scrollRef.current;
++    const saved = anchor.current;
++    if (!scroll || !saved) return;
++    const message = [...scroll.querySelectorAll<HTMLElement>('[data-message-id]')].find(item => item.dataset.messageId === saved.id);
++    if (message) scroll.scrollTop += message.getBoundingClientRect().top - scroll.getBoundingClientRect().top - saved.top;
++    rememberAnchor();
++  }
++
++  useLayoutEffect(() => {
++    if (!ready || !scrollRef.current) return;
++    if (firstLoad.current || following.current) {
++      firstLoad.current = false;
++      jumpToLatest();
++    } else restoreAnchor();
++  }, [contentKey, ready]);
++
++  useLayoutEffect(() => {
++    const scroll = scrollRef.current;
++    if (!scroll || typeof ResizeObserver === 'undefined') return;
++    const observer = new ResizeObserver(() => { if (!firstLoad.current && following.current) jumpToLatest(); });
++    observer.observe(scroll);
++    if (scroll.firstElementChild) observer.observe(scroll.firstElementChild);
++    return () => observer.disconnect();
++  }, []);
++
++  function onMediaLoad() {
++    if (following.current) jumpToLatest(); else restoreAnchor();
++  }
++
++  return { scrollRef, onScroll, onMediaLoad, jumpToLatest, showLatest };
++}
 diff --git a/ui/src/components/useKlarVoice.test.tsx b/ui/src/components/useKlarVoice.test.tsx
 new file mode 100644
 index 0000000000000000000000000000000000000000..37045bc042f3872d3439b3488e7b56b84da807a8
@@ -1062,10 +1314,10 @@ index 586c1272c7c5ebf0cf59694701857bb0db3dcc31..ac7e90b78585ce26a9ebd8108f4eee6c
    buildAgentStatusToast,
    buildRunStatusToast,
 diff --git a/ui/src/index.css b/ui/src/index.css
-index 6e75451d1dabc72254e75a1101e8b7278e7cddf1..77f2eb94ed1ee190b028c90d10b05999a9c202b0 100644
+index 6e75451d1dabc72254e75a1101e8b7278e7cddf1..7ea6c8d0ed0929bd9aa761cbcf4547e72ce0084f 100644
 --- a/ui/src/index.css
 +++ b/ui/src/index.css
-@@ -2480,3 +2480,134 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
+@@ -2480,3 +2480,135 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
     * allow ui/src/pages/Projects.test.tsx — mock project color fixture
     * allow ui/src/pages/Routines.test.tsx — mock routine/label color fixtures
     ── end allowlist ── */
@@ -1120,7 +1372,7 @@ index 6e75451d1dabc72254e75a1101e8b7278e7cddf1..77f2eb94ed1ee190b028c90d10b05999
 +.klar-conversation { display: flex; flex-direction: column; height: calc(100dvh - var(--klar-header-height) - var(--klar-preview-offset, 0rem)); min-height: 0; max-width: var(--klar-chat-width); margin-inline: auto; }
 +.klar-chat-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem var(--klar-chat-pad); border-bottom: 1px solid var(--border); }
 +.klar-chat-header .klar-avatar { --klar-avatar: 2.5rem; }
-+.klar-chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 1rem var(--klar-chat-pad) 0.75rem; scroll-behavior: smooth; }
++.klar-chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 1rem var(--klar-chat-pad) 0.75rem; }
 +.klar-chat-stream { display: flex; flex-direction: column; gap: 1.25rem; padding-bottom: 1.25rem; }
 +.klar-empty-chat { min-height: 14rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; text-align: center; }
 +.klar-empty-chat h2 { font-size: 1.8rem; font-weight: 500; letter-spacing: -0.035em; }
@@ -1140,7 +1392,8 @@ index 6e75451d1dabc72254e75a1101e8b7278e7cddf1..77f2eb94ed1ee190b028c90d10b05999
 +.klar-approval-payload { display: grid; gap: 1rem; }
 +.klar-approval-payload dt { font-size: 0.7rem; font-weight: 600; color: var(--muted-foreground); margin-bottom: 0.3rem; }
 +.klar-approval-payload pre { font-size: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-+.klar-composer-dock { padding: 0.5rem var(--klar-chat-pad) max(1rem, env(safe-area-inset-bottom)); }
++.klar-composer-dock { position: relative; padding: 0.5rem var(--klar-chat-pad) max(1rem, env(safe-area-inset-bottom)); }
++.klar-jump-latest { position: absolute; right: var(--klar-chat-pad); bottom: calc(100% + 0.5rem); border-radius: 50%; box-shadow: var(--klar-shadow); z-index: 1; }
 +.klar-chat-composer { background: var(--card); border: 1px solid var(--border); border-radius: var(--klar-radius); padding: 0.75rem; box-shadow: var(--klar-shadow); }
 +.klar-theme .klar-chat-input { min-height: var(--klar-chat-input); max-height: 10rem; border: 0; resize: vertical; background: transparent; box-shadow: none; padding: 0.4rem 0.5rem; line-height: 1.5; }
 +.klar-theme .klar-chat-input:focus-visible { box-shadow: none; outline: none; }
@@ -1521,15 +1774,15 @@ index 0000000000000000000000000000000000000000..4c8365e765689aa64131f50c838d138e
 +  });
 +});
 diff --git a/ui/src/pages/PaperclipKlar.tsx b/ui/src/pages/PaperclipKlar.tsx
-index 60633421e6ff8e1fa1f85b7799025270afffc4d5..2ae5adf5507c6c8f5cd0ec7f0b57ec9802b78de6 100644
+index 60633421e6ff8e1fa1f85b7799025270afffc4d5..f32dabe0914c844c9de0594b8f00d4b4ad74a125 100644
 --- a/ui/src/pages/PaperclipKlar.tsx
 +++ b/ui/src/pages/PaperclipKlar.tsx
-@@ -1,94 +1,112 @@
+@@ -1,94 +1,117 @@
  import { useEffect, useMemo, useState } from "react";
  import { useQuery } from "@tanstack/react-query";
 -import { Clock3, CirclePause, ShieldCheck, CircleCheck, RefreshCw } from "lucide-react";
 -import { Link } from "@/lib/router";
-+import { ArrowLeft, Bot, ChevronRight, Inbox, LayoutDashboard, Menu, MessageCircle, Plus, RefreshCw, ShieldCheck, SquarePen } from "lucide-react";
++import { ArrowLeft, Bot, ChevronRight, Inbox, LayoutDashboard, Menu, MessageCircle, Plus, RefreshCw, ShieldCheck, Smartphone, SquarePen } from "lucide-react";
 +import { Link, useNavigate } from "@/lib/router";
  import { useCompany } from "../context/CompanyContext";
  import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -1550,6 +1803,7 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..2ae5adf5507c6c8f5cd0ec7f0b57ec98
 +import { KlarBotChat, type ChatDraft } from "../components/KlarBotChat";
 +import { KlarApproval, KlarAttention } from "../components/KlarDecision";
 +import { KlarNewTask } from "../components/KlarNewTask";
++import { KlarInstallHelp, useKlarInstallMetadata } from "../components/KlarInstall";
  import { Button } from "../components/ui/button";
 -import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 +import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
@@ -1630,9 +1884,11 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..2ae5adf5507c6c8f5cd0ec7f0b57ec98
 -        <div className="flex flex-wrap gap-4"><Button asChild variant="outline"><Link to="/skills">Gemeinsame Skills öffnen</Link></Button><Button asChild variant="outline"><Link to="/approvals">Freigaben prüfen</Link></Button><Button asChild variant="outline"><Link to="/artifacts">Ergebnisse öffnen</Link></Button></div>
 -      </TabsContent>
 -    </Tabs>
++  useKlarInstallMetadata();
 +  const { companies, setSelectedCompanyId } = useCompany();
 +  const navigate = useNavigate();
 +  const [newTaskOpen, setNewTaskOpen] = useState(false);
++  const [installHelpOpen, setInstallHelpOpen] = useState(false);
 +  const [newTaskDraft, setNewTaskDraft] = useState("");
 +  const [botId, setBotId] = useState<string | null>(null);
 +  const [drafts, setDrafts] = useState<Record<string, ChatDraft>>({});
@@ -1686,6 +1942,7 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..2ae5adf5507c6c8f5cd0ec7f0b57ec98
 +        <DropdownMenuItem asChild><Link to="/dashboard" onClick={event => { if (!canLeave()) event.preventDefault(); }}><LayoutDashboard className="size-4" />Armaturenbrett</Link></DropdownMenuItem>
 +        <DropdownMenuItem disabled={pending} onSelect={() => setNewTaskOpen(true)}><SquarePen className="size-4" />Neue Aufgabe</DropdownMenuItem>
 +        <DropdownMenuSeparator />
++        <DropdownMenuItem onSelect={() => setInstallHelpOpen(true)}><Smartphone className="size-4" />Zum Home-Bildschirm</DropdownMenuItem>
 +        <DropdownMenuItem asChild><Link to="/agents/new" onClick={event => { if (!canLeave()) event.preventDefault(); }}><Plus className="size-4" />Bot hinzufügen</Link></DropdownMenuItem>
 +        <DropdownMenuItem asChild><Link to="/company/settings/instance/profile" onClick={event => { if (!canLeave()) event.preventDefault(); }}>Mein Konto</Link></DropdownMenuItem>
 +      </DropdownMenuContent></DropdownMenu></div></header>
@@ -1713,6 +1970,7 @@ index 60633421e6ff8e1fa1f85b7799025270afffc4d5..2ae5adf5507c6c8f5cd0ec7f0b57ec98
 +      </section>}
 +    </div>
 +    <KlarNewTask companyId={companyId} agents={team} ready={agents.isSuccess && !agents.isError} open={newTaskOpen} onOpenChange={setNewTaskOpen} draft={newTaskDraft} onDraftChange={setNewTaskDraft} onCreated={refresh} />
++    <KlarInstallHelp open={installHelpOpen} onOpenChange={setInstallHelpOpen} />
    </div>;
  }
 diff --git a/ui/storybook/stories/klar-workspace.stories.tsx b/ui/storybook/stories/klar-workspace.stories.tsx

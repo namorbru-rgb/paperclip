@@ -1,5 +1,19 @@
 # Klar translation crash
 
+Chats open at the newest message after the initial history has loaded. New
+messages follow the bottom only while the reader is there. Scrolling up keeps
+the current message in place and loads older history at the top. A small arrow
+returns to the newest message. Older comment pages stay visible while their
+larger page loads. Image and viewport size changes also keep the bottom visible
+when the reader follows the conversation.
+
+Klar supplies a separate web app manifest with a stable /klar identity and start
+URL, standalone display, German name and existing application icons. The
+manifest is emitted as an HTTPS asset, not an inline data URL. iOS install
+metadata is active while Klar is open and restores native metadata on exit.
+The menu explains Safari's Add to Home Screen action. This does not add offline
+caching of private data or change the native app's browser display mode.
+
 Klar now keeps all pending approvals and decisions in a separate view opened
 from Menu > Freigaben. Assigned and unassigned requests remain available there.
 Chats no longer render pinned approval cards. Returning from the approval list
