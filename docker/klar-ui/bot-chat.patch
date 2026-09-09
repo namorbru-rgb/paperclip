@@ -1,0 +1,1636 @@
+diff --git a/ui/src/components/KlarAttachments.tsx b/ui/src/components/KlarAttachments.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb2a9bf2c5174620f21306a06def65e3aff4a908
+--- /dev/null
++++ b/ui/src/components/KlarAttachments.tsx
+@@ -0,0 +1,15 @@
++import type { IssueAttachment } from "@paperclipai/shared";
++import { Download } from "lucide-react";
++
++export function KlarAttachments({ attachments }: { attachments: IssueAttachment[] }) {
++  if (!attachments.length) return null;
++  return <div className="klar-message-attachments">{attachments.map(file => {
++    const fallback = `/api/attachments/${encodeURIComponent(file.id)}/content`;
++    const path = file.contentPath?.startsWith("blob:") || file.contentPath?.startsWith("/api/attachments/") ? file.contentPath : fallback;
++    return <div key={file.id} className="klar-message-attachment">
++      {file.contentType.startsWith("image/") && file.contentType !== "image/svg+xml" && <a href={path} target="_blank" rel="noopener noreferrer"><img src={path} loading="lazy" alt={file.originalFilename ?? "Bildanhang"} /></a>}
++      {file.contentType.startsWith("audio/") && <audio src={path} controls preload="metadata" aria-label={file.originalFilename ?? "Sprachnotiz"} />}
++      <a href={path} download={file.originalFilename ?? "Anhang"}><Download className="size-3.5 shrink-0" />{file.originalFilename ?? "Anhang"}</a>
++    </div>;
++  })}</div>;
++}
+diff --git a/ui/src/components/KlarBotChat.test.tsx b/ui/src/components/KlarBotChat.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..eef7379674310b689de16668c7a890574ff1513c
+--- /dev/null
++++ b/ui/src/components/KlarBotChat.test.tsx
+@@ -0,0 +1,64 @@
++// @vitest-environment jsdom
++import { act, useState, type ReactNode } from "react";
++import { createRoot, type Root } from "react-dom/client";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
++import type { Agent, Approval, CompactIssue } from "@paperclipai/shared";
++import { KlarBotChat, type ChatDraft } from "./KlarBotChat";
++import { queryKeys } from "../lib/queryKeys";
++const api = vi.hoisted(() => ({ listCompact: vi.fn(), listComments: vi.fn(), listAttachments: vi.fn(), get: vi.fn(), addComment: vi.fn(), approve: vi.fn(), reject: vi.fn() }));
++vi.mock("../api/issues", () => ({ issuesApi: api }));
++vi.mock("../api/approvals", () => ({ approvalsApi: api }));
++vi.mock("./MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
++vi.mock("./AttentionInteractionResolver", () => ({ AttentionInteractionResolver: () => <p>Native decision resolver</p> }));
++vi.mock("@/lib/router", () => ({ Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a> }));
++const agent = { id: "bot", companyId: "company", name: "Nora", status: "running" } as Agent;
++const task = { id: "task", identifier: "DEMO-1", companyId: "company", assigneeAgentId: "bot", title: "Kontaktseite", status: "in_review", createdAt: new Date("2026-01-01") } as CompactIssue;
++const approval = { id: "approval", companyId: "company", type: "request_board_approval", status: "pending", requestedByAgentId: "bot", requestedByUserId: null, decisionNote: null, decidedByUserId: null, decidedAt: null, createdAt: new Date(), updatedAt: new Date(), payload: { title: "Veröffentlichen?", nextActionOnApproval: "Die geprüfte Webseite veröffentlichen.", risks: ["Bestehende Inhalte werden ersetzt."] } } as Approval;
++const back = vi.fn(), resolved = vi.fn();
++let root: Root, host: HTMLDivElement, client: QueryClient;
++function Harness() {
++  const [draft, setDraft] = useState<ChatDraft>({ text: "", replyTo: null, files: [] });
++  return <KlarBotChat companyId="company" agent={agent} agents={[agent]} approvals={[approval]} decisions={[]} draft={draft} onDraftChange={setDraft} onBack={back} onResolved={resolved} onPendingChange={() => {}} />;
++}
++beforeEach(async () => {
++  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
++  Object.values(api).forEach(mock => mock.mockReset()); back.mockReset(); resolved.mockReset();
++  api.listCompact.mockResolvedValue([task]); api.listComments.mockResolvedValue([]); api.listAttachments.mockResolvedValue([]);
++  api.get.mockResolvedValue({ ...task, description: "Die Kontaktseite vereinfachen." });
++  client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
++  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
++  await act(async () => root.render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>));
++  await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
++});
++afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); });
++function button(label: string) { return [...host.querySelectorAll("button")].find(element => element.textContent?.trim() === label)!; }
++describe("Klar chat navigation and decisions", () => {
++  it("keeps unresolved approvals after a newly arriving message", async () => {
++    await act(async () => {
++      client.setQueryData([...queryKeys.issues.comments("task"), "klar-chat", 12], [{ id: "latest", issueId: "task", companyId: "company", body: "Eine weitere Antwort.", authorAgentId: "bot", createdAt: new Date("2026-01-02") }]);
++    });
++    await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)); });
++    const message = host.querySelector('[data-message-id="comment-latest"]')!;
++    const pin = host.querySelector('[data-approval-id="approval"]')!;
++    expect(message).not.toBeNull();
++    expect(message.compareDocumentPosition(pin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
++  });
++  it("requires opening the concrete request before an explicit approval", async () => {
++    expect(api.approve).not.toHaveBeenCalled();
++    expect(button("Freigeben")).toBeUndefined();
++    await act(async () => button("Prüfen").click());
++    expect(host.textContent).toContain("Die geprüfte Webseite veröffentlichen.");
++    expect(host.textContent).toContain("Bestehende Inhalte werden ersetzt.");
++    api.approve.mockResolvedValue({ ...approval, status: "approved" });
++    await act(async () => { button("Freigeben").click(); button("Freigeben").click(); });
++    expect(api.approve).toHaveBeenCalledTimes(1);
++    expect(api.approve).toHaveBeenCalledWith("approval");
++  });
++  it("selects a task as the reply target and returns to the overview on back", async () => {
++    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Auf DEMO-1 antworten"]')!.click());
++    expect(host.querySelector("textarea")?.getAttribute("aria-label")).toBe("Antwort auf DEMO-1");
++    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Zur Bot-Übersicht"]')!.click());
++    expect(back).toHaveBeenCalledTimes(1);
++  });
++});
+\ No newline at end of file
+diff --git a/ui/src/components/KlarBotChat.tsx b/ui/src/components/KlarBotChat.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..b33caad15ac8329fc14eb1b7b379f6c1ff950d32
+--- /dev/null
++++ b/ui/src/components/KlarBotChat.tsx
+@@ -0,0 +1,84 @@
++import { useEffect, useMemo, useRef, useState } from "react";
++import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
++import type { Agent, Approval, AttentionItem, CompactIssue } from "@paperclipai/shared";
++import { ArrowLeft, CornerUpLeft, Info, Plus } from "lucide-react";
++import { Link } from "@/lib/router";
++import { issuesApi } from "../api/issues";
++import { queryKeys } from "../lib/queryKeys";
++import { botLabels, chatTimeline, taskLabels, type KlarReplyTarget } from "../lib/klar-chat";
++import { KlarAttachments } from "./KlarAttachments";
++import { KlarComposer } from "./KlarComposer";
++import { KlarApproval, KlarAttention } from "./KlarDecision";
++import { MarkdownBody } from "./MarkdownBody";
++import { Button } from "./ui/button";
++import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
++
++const PAGE_SIZE = 12;
++export interface ChatDraft { text: string; replyTo: KlarReplyTarget | null; files: File[]; progress?: import("../lib/klar-send").KlarSendProgress }
++interface Props {
++  companyId: string; agent: Agent; agents: Agent[]; approvals: Approval[]; decisions: AttentionItem[];
++  currentUserId?: string | null; draft: ChatDraft; onDraftChange: (draft: ChatDraft) => void;
++  onBack: () => void; onResolved: () => void; onPendingChange: (pending: boolean) => void;
++}
++export function KlarBotChat({ companyId, agent, agents, approvals, decisions, currentUserId, draft, onDraftChange, onBack, onResolved, onPendingChange }: Props) {
++  const [details, setDetails] = useState<CompactIssue | null>(null);
++  const [showBot, setShowBot] = useState(false);
++  const [pending, setPending] = useState(false);
++  const [commentLimit, setCommentLimit] = useState(12);
++  const bottom = useRef<HTMLDivElement>(null);
++  const sent = useRef(false);
++  const tasks = useInfiniteQuery({
++    queryKey: [...queryKeys.issues.list(companyId), "klar-chat", agent.id],
++    queryFn: ({ pageParam }) => issuesApi.listCompact(companyId, { assigneeAgentId: agent.id, includeRoutineExecutions: true, limit: PAGE_SIZE, offset: pageParam, sortField: "updated", sortDir: "desc" }),
++    initialPageParam: 0,
++    getNextPageParam: (last, pages) => last.length === PAGE_SIZE ? pages.length * PAGE_SIZE : undefined,
++    refetchInterval: 15_000,
++  });
++  const loadedTasks = useMemo(() => [...new Map((tasks.data?.pages.flat() ?? []).filter(task => task.companyId === companyId && task.assigneeAgentId === agent.id).map(task => [task.id, task])).values()], [tasks.data, companyId, agent.id]);
++  const comments = useQueries({ queries: loadedTasks.map(task => ({
++    queryKey: [...queryKeys.issues.comments(task.id), "klar-chat", commentLimit],
++    queryFn: () => issuesApi.listComments(task.id, { order: "desc", limit: commentLimit }),
++    refetchInterval: 15_000,
++  })) });
++  const attachmentQueries = useQueries({ queries: loadedTasks.map(task => ({ queryKey: queryKeys.issues.attachments(task.id), queryFn: () => issuesApi.listAttachments(task.id), refetchInterval: 30_000 })) });
++  const attachments = attachmentQueries.flatMap(query => query.data ?? []).filter(file => file.companyId === companyId);
++  const allComments = comments.flatMap(query => query.data ?? []);
++  const timeline = chatTimeline(loadedTasks, comments.flatMap(query => query.data ?? []));
++  const agentMap = useMemo(() => new Map(agents.map(item => [item.id, item])), [agents]);
++  const fullTask = useQuery({ queryKey: queryKeys.issues.detail(details?.id ?? ""), queryFn: () => issuesApi.get(details!.id), enabled: !!details });
++  const refresh = () => { void tasks.refetch(); for (const query of comments) void query.refetch(); for (const query of attachmentQueries) void query.refetch(); onResolved(); };
++  useEffect(() => { if (sent.current) { bottom.current?.scrollIntoView?.({ block: "end", behavior: "smooth" }); sent.current = false; } }, [timeline.length]);
++  const reply = (task: CompactIssue) => { if (!pending && !draft.progress) onDraftChange({ ...draft, replyTo: task }); };
++  const currentReply = draft.replyTo ? loadedTasks.find(task => task.id === draft.replyTo?.id) ?? draft.replyTo : null;
++
++  return <section className="klar-conversation" aria-label={`Chat mit ${agent.name}`}>
++    <header className="klar-chat-header"><Button variant="ghost" size="icon" disabled={pending} onClick={onBack} aria-label="Zur Bot-Übersicht"><ArrowLeft className="size-5" /></Button><span className="klar-avatar">{agent.name.slice(0, 2).toUpperCase()}</span><div className="min-w-0 flex-1"><h1 className="font-semibold truncate">{agent.name}</h1><p className="text-xs text-muted-foreground">{botLabels[agent.status] ?? "Status unbekannt"}</p></div><Button variant="ghost" size="icon" onClick={() => setShowBot(true)} aria-label="Bot-Details"><Info className="size-5" /></Button></header>
++    <div className="klar-chat-scroll">
++      <div className="klar-chat-stream" aria-label="Nachrichten">
++        {tasks.hasNextPage && <Button variant="ghost" disabled={tasks.isFetchingNextPage} onClick={() => { void tasks.fetchNextPage(); }}>Ältere Aufgaben laden</Button>}
++        {tasks.isPending && <p role="status">Gespräch wird geladen…</p>}
++        {tasks.isError && <p role="alert" className="text-sm text-destructive">Die Aufgaben konnten nicht geladen werden. <button onClick={() => { void tasks.refetch(); }} className="underline">Erneut laden</button></p>}
++        {comments.some(query => query.isError) && <p role="alert" className="text-sm text-destructive">Ein Teil der Antworten konnte nicht geladen werden. <button onClick={refresh} className="underline">Erneut laden</button></p>}
++        {!tasks.isPending && !tasks.isError && loadedTasks.length === 0 && <div className="klar-empty-chat"><h2>Was soll {agent.name} für dich tun?</h2><p>Schreib einfach los. Deine Nachricht wird zur Aufgabe für diesen Bot.</p></div>}
++        {timeline.map(event => {
++          const { task, comment } = event;
++          const authorId = comment?.authorAgentId ?? comment?.derivedAuthorAgentId;
++          const author = comment ? authorId ? agentMap.get(authorId)?.name ?? "Bot" : comment.authorUserId === currentUserId ? "Du" : "Team" : "Aufgabe";
++          return <article key={event.id} className={comment && authorId ? "klar-message klar-bot-message" : "klar-message klar-task-message"} data-message-id={event.id}>
++            <div className="klar-message-meta"><span>{author}</span><time dateTime={event.at.toISOString()}>{event.at.toLocaleString("de-CH", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</time></div>
++            <div className="klar-message-body">{comment ? <><button type="button" className="klar-message-reference" onClick={() => setDetails(task)}>{task.identifier} · {task.title}</button><MarkdownBody>{comment.body}</MarkdownBody></> : <button type="button" className="klar-task-open" onClick={() => setDetails(task)}><span className="text-xs text-muted-foreground">{task.identifier} · {taskLabels[task.status] ?? task.status}</span><strong>{task.title}</strong><span className="text-xs text-muted-foreground">Aufgabe ansehen</span></button>}</div>
++            <KlarAttachments attachments={attachments.filter(file => file.issueId === task.id && (comment ? comment.body.includes(file.id) || file.issueCommentId === comment.id : !allComments.some(message => message.issueId === task.id && (message.body.includes(file.id) || message.id === file.issueCommentId))))} />
++            <Button type="button" variant="ghost" size="sm" className="klar-reply-button" disabled={pending} onClick={() => reply(task)} aria-label={`Auf ${task.identifier ?? task.title} antworten`}><CornerUpLeft className="size-3.5" />Antworten</Button>
++          </article>;
++        })}
++        {comments.some(query => (query.data?.length ?? 0) >= commentLimit) && <Button variant="ghost" onClick={() => setCommentLimit(limit => limit + 24)}>Weitere Antworten laden</Button>}
++      </div>
++      {/* Kept outside the time-sorted stream: all arriving messages stay above unresolved decisions. */}
++      {(approvals.length > 0 || decisions.length > 0) && <section className="klar-pinned-decisions" aria-label="Offene Freigaben – immer unter den Nachrichten"><p className="text-xs text-muted-foreground">Bleibt hier, bis du entschieden hast.</p>{approvals.map(approval => <KlarApproval key={approval.id} approval={approval} onResolved={onResolved} />)}{decisions.map(item => <KlarAttention key={item.id} item={item} agentMap={agentMap} currentUserId={currentUserId} onResolved={onResolved} />)}</section>}
++      <div ref={bottom} />
++    </div>
++    <div className="klar-composer-dock">{draft.replyTo && <Button variant="ghost" size="sm" disabled={pending || !!draft.progress} onClick={() => onDraftChange({ ...draft, replyTo: null })}><Plus className="size-4" />Als neue Aufgabe schreiben</Button>}<KlarComposer companyId={companyId} agent={agent} replyTo={currentReply} draft={draft.text} files={draft.files} savedProgress={draft.progress} onProgressChange={progress => onDraftChange({ ...draft, progress })} onFilesChange={files => onDraftChange({ ...draft, files })} onDraftChange={text => onDraftChange({ ...draft, text })} onClearReply={() => onDraftChange({ ...draft, replyTo: null })} onSent={issue => { sent.current = true; onDraftChange({ text: "", files: [], replyTo: issue ?? draft.replyTo }); refresh(); }} onPendingChange={value => { setPending(value); onPendingChange(value); }} /></div>
++    <Dialog open={!!details} onOpenChange={open => { if (!open) setDetails(null); }}><DialogContent className="klar-theme klar-details"><DialogHeader><DialogTitle>{details?.title}</DialogTitle><DialogDescription>{details?.identifier} · {details ? taskLabels[details.status] : ""}</DialogDescription></DialogHeader>{fullTask.isPending ? <p>Aufgabe wird geladen…</p> : fullTask.isError || fullTask.data?.companyId !== companyId ? <p role="alert">Die Details konnten nicht geladen werden.</p> : <MarkdownBody>{fullTask.data.description ?? "Keine zusätzliche Beschreibung."}</MarkdownBody>}<div className="flex flex-wrap gap-2"><Button disabled={pending} onClick={() => { if (details) reply(details); setDetails(null); }}><CornerUpLeft className="size-4" />Darauf antworten</Button><Button variant="outline" asChild><Link to={`/issues/${details?.identifier ?? details?.id}`}>Alle Aufgabendetails</Link></Button></div></DialogContent></Dialog>
++    <Dialog open={showBot} onOpenChange={setShowBot}><DialogContent className="klar-theme klar-details"><DialogHeader><DialogTitle>{agent.name}</DialogTitle><DialogDescription>{agent.title || "Dein Bot"}</DialogDescription></DialogHeader><p>{botLabels[agent.status]}</p>{agent.capabilities && <MarkdownBody>{agent.capabilities}</MarkdownBody>}<Button variant="outline" asChild><Link to={`/agents/${agent.id}`}>Bot-Einstellungen öffnen</Link></Button></DialogContent></Dialog>
++  </section>;
++}
+\ No newline at end of file
+diff --git a/ui/src/components/KlarComposer.test.tsx b/ui/src/components/KlarComposer.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce53ac2a3f8b8f64d42163b014ab549d7000f79e
+--- /dev/null
++++ b/ui/src/components/KlarComposer.test.tsx
+@@ -0,0 +1,115 @@
++// @vitest-environment jsdom
++import { act, useState } from "react";
++import { createRoot, type Root } from "react-dom/client";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import type { Agent } from "@paperclipai/shared";
++import { KlarComposer } from "./KlarComposer";
++import { ApiError } from "../api/client";
++import type { KlarReplyTarget } from "../lib/klar-chat";
++
++const mocks = vi.hoisted(() => ({ create: vi.fn(), addComment: vi.fn(), update: vi.fn(), uploadAttachment: vi.fn() }));
++vi.mock("../api/issues", () => ({ issuesApi: mocks }));
++vi.mock("./KlarFilePreview", () => ({ KlarFilePreview: ({ file }: { file: File }) => <span>{file.name}</span> }));
++let root: Root, host: HTMLDivElement, client: QueryClient;
++const agent = { id: "bot-a", companyId: "company-a", name: "Nora", status: "running" } as Agent;
++const task = { id: "task-a", companyId: "company-a", assigneeAgentId: "bot-a", identifier: "DEMO-1", title: "Kontaktseite", status: "in_progress" } as KlarReplyTarget;
++function Harness({ owner = agent, target = null, initialFiles = [] }: { owner?: Agent; target?: KlarReplyTarget | null; initialFiles?: File[] }) {
++  const [text, setText] = useState("");
++  const [files, setFiles] = useState(initialFiles);
++  return <KlarComposer companyId="company-a" agent={owner} replyTo={target} onClearReply={() => {}} draft={text} onDraftChange={setText} files={files} onFilesChange={setFiles} onProgressChange={() => {}} onSent={() => {}} />;
++}
++function render(props: Parameters<typeof Harness>[0] = {}) { root.render(<QueryClientProvider client={client}><Harness {...props} /></QueryClientProvider>); }
++function sendButton() { return host.querySelector<HTMLButtonElement>('button[type="submit"]')!; }
++async function fill(text: string) {
++  await act(async () => {
++    const field = host.querySelector("textarea")!;
++    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text);
++    field.dispatchEvent(new Event("input", { bubbles: true }));
++  });
++}
++async function send() { await act(async () => { sendButton().click(); }); }
++beforeEach(async () => {
++  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
++  Object.values(mocks).forEach(mock => mock.mockReset());
++  client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
++  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
++  await act(async () => render());
++});
++afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); });
++
++describe("Klar single-field chat", () => {
++  it("keeps one text field, attachment and voice controls without making a request while typing", async () => {
++    expect(host.querySelectorAll("textarea")).toHaveLength(1);
++    expect(host.querySelectorAll('input:not([type="file"])')).toHaveLength(0);
++    expect(host.querySelector('[aria-label="Diktieren"]')).not.toBeNull();
++    expect(host.querySelector('[aria-label="Sprachnotiz aufnehmen"]')).not.toBeNull();
++    await fill("Mach die Kontaktseite einfacher.");
++    expect(mocks.create).not.toHaveBeenCalled();
++  });
++  it("creates exactly one task for the selected bot on double-click", async () => {
++    let finish!: (value: unknown) => void;
++    mocks.create.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
++    await fill("Mach die Kontaktseite einfacher.\nMit grossem Kontaktknopf.");
++    await act(async () => { sendButton().click(); sendButton().click(); });
++    expect(mocks.create).toHaveBeenCalledTimes(1);
++    expect(mocks.create).toHaveBeenCalledWith("company-a", expect.objectContaining({ assigneeAgentId: "bot-a", status: "todo", description: "Mach die Kontaktseite einfacher.\nMit grossem Kontaktknopf." }));
++    await act(async () => finish({ id: "new-task" }));
++    await vi.waitFor(() => expect(host.querySelector("textarea")?.value).toBe(""));
++  });
++  it("replies to the selected task without reopening it or interrupting a run", async () => {
++    mocks.addComment.mockResolvedValue({ id: "comment" });
++    await act(async () => render({ target: task }));
++    await fill("Bitte den Knopf grösser machen.");
++    await act(async () => { host.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
++    expect(mocks.addComment).toHaveBeenCalledWith("task-a", "Bitte den Knopf grösser machen.");
++    expect(mocks.create).not.toHaveBeenCalled();
++  });
++  it("keeps Shift+Enter and composition confirmation from sending and ignores held Enter", async () => {
++    await fill("Noch nicht senden");
++    const field = host.querySelector("textarea")!;
++    for (const init of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }, { repeat: true }]) {
++      await act(async () => { field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init })); });
++    }
++    expect(mocks.create).not.toHaveBeenCalled();
++    expect(field.value).toBe("Noch nicht senden");
++    expect(field.getAttribute("enterkeyhint")).toBe("send");
++  });
++  it("keeps text after an expired login", async () => {
++    mocks.create.mockRejectedValue(new ApiError("Unauthorized", 401, {}));
++    await fill("Mein Text bleibt."); await send();
++    await vi.waitFor(() => expect(host.textContent).toContain("Anmeldung ist abgelaufen"));
++    expect(host.querySelector("textarea")?.value).toBe("Mein Text bleibt.");
++  });
++  it("does not send to another company or a reassigned task", async () => {
++    await act(async () => render({ target: { ...task, assigneeAgentId: "other-bot" } }));
++    await fill("Nicht senden"); await send();
++    expect(sendButton().disabled).toBe(true);
++    expect(mocks.addComment).not.toHaveBeenCalled();
++    await act(async () => render({ owner: { ...agent, companyId: "company-b" } }));
++    expect(sendButton().disabled).toBe(true);
++    expect(mocks.create).not.toHaveBeenCalled();
++  });
++  it("does not start a paused bot but permits comments on its tasks", async () => {
++    await act(async () => render({ owner: { ...agent, status: "paused" } }));
++    await fill("Prüfen");
++    expect(sendButton().disabled).toBe(true);
++    await act(async () => render({ owner: { ...agent, status: "paused" }, target: task }));
++    expect(sendButton().disabled).toBe(false);
++  });
++  it("supports a file-only message and assigns only after upload", async () => {
++    const file = new File(["image"], "bild.png", { type: "image/png" });
++    mocks.create.mockResolvedValue({ id: "draft", companyId: "company-a" });
++    mocks.uploadAttachment.mockResolvedValue({ id: "attachment", originalFilename: "bild.png", contentType: "image/png" });
++    mocks.update.mockResolvedValue({ id: "draft", assigneeAgentId: "bot-a" });
++    await act(async () => render({ initialFiles: [file] }));
++    // Remount so the initial file state is applied.
++    await act(async () => { root.render(<QueryClientProvider client={client}><Harness key="files" initialFiles={[file]} /></QueryClientProvider>); });
++    await send();
++    await vi.waitFor(() => expect(mocks.update).toHaveBeenCalledTimes(1));
++    expect(mocks.create.mock.calls[0][1]).not.toHaveProperty("assigneeAgentId");
++    expect(mocks.create.mock.calls[0][1].status).toBe("backlog");
++    expect(mocks.uploadAttachment).toHaveBeenCalledWith("company-a", "draft", file);
++    expect(mocks.update.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.uploadAttachment.mock.invocationCallOrder[0]);
++  });
++});
+diff --git a/ui/src/components/KlarComposer.tsx b/ui/src/components/KlarComposer.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..025c4c1c4b6ea1d9338a26b49f31707fb910f131
+--- /dev/null
++++ b/ui/src/components/KlarComposer.tsx
+@@ -0,0 +1,102 @@
++import { useEffect, useRef, useState } from "react";
++import { useMutation, useQueryClient } from "@tanstack/react-query";
++import type { Agent, Issue } from "@paperclipai/shared";
++import { ArrowUp, CornerUpLeft, Loader2, Mic, Paperclip, Plus, Square, AudioLines, X } from "lucide-react";
++import { issuesApi } from "../api/issues";
++import { ApiError } from "../api/client";
++import { queryKeys } from "../lib/queryKeys";
++import { chatTaskPayload, type KlarReplyTarget } from "../lib/klar-chat";
++import { sendKlarMessage, type KlarSendProgress } from "../lib/klar-send";
++import { KlarFilePreview } from "./KlarFilePreview";
++import { useKlarVoice } from "./useKlarVoice";
++import { Button } from "./ui/button";
++import { Textarea } from "./ui/textarea";
++
++interface Props {
++  companyId: string;
++  agent: Agent;
++  replyTo: KlarReplyTarget | null;
++  onClearReply: () => void;
++  draft: string;
++  files: File[];
++  savedProgress?: KlarSendProgress;
++  onProgressChange: (progress: KlarSendProgress) => void;
++  onFilesChange: (files: File[]) => void;
++  onDraftChange: (text: string) => void;
++  onSent: (issue?: Issue) => void;
++  onPendingChange?: (pending: boolean) => void;
++}
++
++export function KlarComposer({ companyId, agent, replyTo, onClearReply, draft, files, savedProgress, onProgressChange, onFilesChange, onDraftChange, onSent, onPendingChange }: Props) {
++  const client = useQueryClient();
++  const input = useRef<HTMLTextAreaElement>(null);
++  const locked = useRef(false);
++  const uploadInput = useRef<HTMLInputElement>(null);
++  const progress = useRef<KlarSendProgress | null>(savedProgress ?? null);
++  const [problem, setProblem] = useState("");
++  const [receipt, setReceipt] = useState("");
++  const validAgent = agent.companyId === companyId && !["terminated", "pending_approval"].includes(agent.status);
++  const validTarget = !replyTo || (replyTo.companyId === companyId && replyTo.assigneeAgentId === agent.id);
++  const stopped = ["paused", "error"].includes(agent.status);
++  useEffect(() => { if (replyTo) input.current?.focus(); }, [replyTo?.id]);
++  const send = useMutation({
++    mutationFn: async ({ body, target }: { body: string; target: KlarReplyTarget | null }) => {
++      if (!validAgent || !validTarget) throw new Error("Ungültiges Ziel");
++      if (files.length || progress.current) {
++        progress.current ??= { companyId, agentId: agent.id, text: body, files: [...files], target, attachments: [], committing: false };
++        return sendKlarMessage(progress.current);
++      }
++      if (target) { await issuesApi.addComment(target.id, body); return undefined; }
++      return issuesApi.create(companyId, chatTaskPayload(body, agent.id));
++    },
++    retry: false,
++    onSuccess: (issue, variables) => {
++      progress.current = null;
++      onDraftChange(""); onFilesChange([]);
++      setReceipt(variables.target ? "Antwort gespeichert." : "Aufgabe übergeben. Der tatsächliche Start erscheint im Verlauf.");
++      void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
++      if (variables.target) void client.invalidateQueries({ queryKey: queryKeys.issues.comments(variables.target.id) });
++      onSent(issue);
++    },
++    onError: error => { if (progress.current) onProgressChange(progress.current); setProblem(error instanceof ApiError && error.status === 401
++      ? "Deine Anmeldung ist abgelaufen. Melde dich in einem zweiten Tab erneut an; dein Text bleibt hier erhalten."
++      : error instanceof ApiError && error.status === 403
++        ? "Dir fehlt die Berechtigung für diese Nachricht. Dein Text bleibt erhalten."
++        : "Das Speichern konnte nicht bestätigt werden. Dein Text bleibt erhalten. Prüfe den Verlauf vor einem erneuten Versuch, damit nichts doppelt angelegt wird."); },
++    onSettled: () => { locked.current = false; onPendingChange?.(false); },
++  });
++  function addFiles(incoming: File[]) {
++    if (send.isPending || progress.current || voice.mode) return;
++    const valid = incoming.filter(file => file.size > 0 && file.size <= 10 * 1024 * 1024);
++    if (valid.length !== incoming.length || files.length + valid.length > 10) setProblem("Bis zu 10 Dateien mit je höchstens 10 MB. Leere oder zu grosse Dateien wurden nicht übernommen.");
++    onFilesChange([...files, ...valid].slice(0, 10));
++  }
++  const voice = useKlarVoice({ text: draft, onText: onDraftChange, onFile: file => onFilesChange([...files, file]) });
++  useEffect(() => { onPendingChange?.(!!voice.mode || send.isPending); }, [voice.mode, send.isPending]);
++  const frozen = send.isPending || !!progress.current || !!voice.mode;
++  function submit() {
++    if ((!draft.trim() && !files.length) || voice.mode || progress.current?.committing || locked.current || !validAgent || !validTarget || (!replyTo && stopped)) return;
++    locked.current = true; onPendingChange?.(true); setProblem(""); setReceipt("");
++    send.mutate({ body: draft.trim(), target: replyTo });
++  }
++  return <form className="klar-chat-composer" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); addFiles(Array.from(event.dataTransfer.files)); }} onPaste={event => { const incoming = Array.from(event.clipboardData.files); if (incoming.length) { event.preventDefault(); addFiles(incoming); } }} onSubmit={event => { event.preventDefault(); submit(); }}>
++    {replyTo && <div className="klar-reply-target"><CornerUpLeft className="size-4 shrink-0" /><span>Antwort auf <strong>{replyTo.title}</strong></span><Button type="button" size="icon" variant="ghost" disabled={frozen} onClick={onClearReply} aria-label="Antwortziel entfernen"><X className="size-4" /></Button></div>}
++    <Textarea ref={input} aria-label={replyTo ? `Antwort auf ${replyTo.identifier ?? replyTo.title}` : `Neue Aufgabe für ${agent.name}`} placeholder={replyTo ? "Was möchtest du ergänzen oder ändern?" : `Was soll ${agent.name} für dich tun?`} value={draft} onChange={event => { onDraftChange(event.target.value); setReceipt(""); }} disabled={frozen} className="klar-chat-input" enterKeyHint="send" onKeyDown={event => {
++      if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
++      event.preventDefault();
++      if (!event.repeat) submit();
++    }} />
++    {files.length > 0 && <div className="klar-attachments">{files.map((file, index) => <KlarFilePreview key={`${file.name}-${index}`} file={file} disabled={frozen} onRemove={() => onFilesChange(files.filter((_, position) => position !== index))} />)}</div>}
++    <input ref={uploadInput} type="file" multiple className="sr-only" aria-label="Bilder und Dateien auswählen" disabled={frozen} onChange={event => { addFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
++    <div className="klar-send-row"><div className="flex items-center gap-1"><Button type="button" variant="ghost" size="icon" disabled={frozen} onClick={() => uploadInput.current?.click()} aria-label="Bild oder Datei anhängen"><Paperclip className="size-5" /></Button><Button type="button" variant="ghost" size="icon" disabled={send.isPending || !!progress.current || (!!voice.mode && voice.mode !== "dictating")} onClick={voice.dictate} aria-label={voice.mode === "dictating" ? "Diktieren stoppen" : "Diktieren"} aria-pressed={voice.mode === "dictating"}>{voice.mode === "dictating" ? <Square className="size-5" /> : <Mic className="size-5" />}</Button><Button type="button" variant="ghost" size="icon" disabled={send.isPending || !!progress.current || voice.mode === "dictating" || voice.mode === "starting"} onClick={() => { void voice.record(); }} aria-label={voice.mode === "recording" ? "Sprachnotiz beenden" : "Sprachnotiz aufnehmen"} aria-pressed={voice.mode === "recording"}>{voice.mode === "recording" ? <Square className="size-5" /> : <AudioLines className="size-5" />}</Button></div><span className="klar-composer-mode">{replyTo ? "Antwort" : "Neue Aufgabe"}</span><Button type="submit" size="icon" className="rounded-full" aria-label={replyTo ? "Antwort senden" : "Aufgabe senden"} disabled={(!draft.trim() && !files.length) || !!voice.mode || !!progress.current?.committing || send.isPending || !validAgent || !validTarget || (!replyTo && stopped)}>{send.isPending ? <Loader2 className="size-5 animate-spin" /> : <ArrowUp className="size-5" />}</Button></div>
++    {voice.mode && <p role="status" className="text-xs text-muted-foreground">{voice.mode === "dictating" ? "Diktiere jetzt. Der Text bleibt vor dem Senden bearbeitbar." : voice.mode === "starting" ? "Mikrofon wird geöffnet…" : "Sprachnotiz wird aufgenommen · höchstens 5 Minuten"}</p>}
++    {voice.error && <p role="alert" className="text-sm text-destructive">{voice.error}</p>}
++    {progress.current && !send.isPending && <p className="text-xs text-muted-foreground">{progress.current.committing ? "Versandstatus unklar. Bitte den Verlauf prüfen, bevor du eine weitere Nachricht sendest." : "Der Upload ist unvollständig. Der Entwurf bleibt erhalten; mit Senden setzt du ihn fort."}</p>}
++    {!validAgent && <p role="alert" className="text-sm text-destructive">Dieser Bot kann gerade keine Aufgaben empfangen.</p>}
++    {!validTarget && <p role="alert" className="text-sm text-destructive">Die Aufgabe gehört nicht mehr zu diesem Bot. Bitte aktualisieren.</p>}
++    {stopped && !replyTo && <p className="text-xs text-muted-foreground">Der Bot läuft gerade nicht. Du kannst bestehenden Aufgaben antworten; neue Aufgaben sind bis zur Klärung gesperrt.</p>}
++    {replyTo && ["done", "cancelled"].includes(replyTo.status) && <p className="text-xs text-muted-foreground">Diese Aufgabe ist abgeschlossen. Deine Antwort ergänzt den Verlauf. Für neue Arbeit erstelle eine neue Aufgabe.</p>}
++    {problem && <p role="alert" className="text-sm text-destructive">{problem}</p>}
++    {receipt && <p role="status" className="text-xs text-muted-foreground">{receipt}</p>}
++  </form>;
++}
+diff --git a/ui/src/components/KlarDecision.tsx b/ui/src/components/KlarDecision.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..dcc1eebc675bb14cd13b2bc2f573e0e52bcabf87
+--- /dev/null
++++ b/ui/src/components/KlarDecision.tsx
+@@ -0,0 +1,65 @@
++import { useRef, useState } from "react";
++import { useMutation, useQueryClient } from "@tanstack/react-query";
++import type { Agent, Approval, AttentionItem } from "@paperclipai/shared";
++import { Check, ChevronDown, Pin, X } from "lucide-react";
++import { Link } from "@/lib/router";
++import { approvalsApi } from "../api/approvals";
++import { queryKeys } from "../lib/queryKeys";
++import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
++import { MarkdownBody } from "./MarkdownBody";
++import { Button } from "./ui/button";
++import { needsApproval } from "../lib/klar-chat";
++
++const fieldLabels: Record<string, string> = {
++  title: "Titel", summary: "Zusammenfassung", recommendedAction: "Vorgeschlagene Aktion",
++  nextActionOnApproval: "Nach deiner Freigabe", risks: "Risiken", proposedComment: "Vorgeschlagener Kommentar",
++  name: "Name", role: "Rolle", capabilities: "Fähigkeiten", adapterType: "Anbindung", adapterConfig: "Konfiguration",
++  scopeName: "Geltungsbereich", scopeType: "Art", budgetAmount: "Budget", observedAmount: "Verbrauch",
++  windowKind: "Zeitraum", guidance: "Hinweise", plan: "Plan", description: "Beschreibung", strategy: "Strategie",
++};
++export function KlarApproval({ approval, onResolved }: { approval: Approval; onResolved: () => void }) {
++  const [open, setOpen] = useState(false);
++  const [error, setError] = useState("");
++  const locked = useRef(false);
++  const client = useQueryClient();
++  const decision = useMutation({
++    mutationFn: (accept: boolean) => accept ? approvalsApi.approve(approval.id) : approvalsApi.reject(approval.id),
++    retry: false,
++    onSuccess: result => {
++      client.setQueryData<Approval[]>(queryKeys.approvals.list(approval.companyId), current => current?.map(item => item.id === result.id ? result : item));
++      void client.invalidateQueries({ queryKey: queryKeys.approvals.list(approval.companyId) });
++      void client.invalidateQueries({ queryKey: queryKeys.attention(approval.companyId) });
++      onResolved();
++    },
++    onError: () => setError("Die Entscheidung konnte nicht bestätigt werden. Bitte aktualisieren und den Status prüfen."),
++    onSettled: () => { locked.current = false; },
++  });
++  const title = [approval.payload.title, approval.payload.name, approval.payload.summary].find(value => typeof value === "string" && value.trim()) as string | undefined;
++  function decide(accept: boolean) {
++    if (locked.current || !open || !needsApproval(approval)) return;
++    locked.current = true; setError(""); decision.mutate(accept);
++  }
++  return <article className="klar-decision" data-approval-id={approval.id}>
++    <div className="flex items-center gap-2 text-xs font-medium"><Pin className="size-3.5" />Deine Freigabe ist offen</div>
++    <div className="flex items-start justify-between gap-3"><p className="font-medium break-words">{title || "Anfrage zur Freigabe"}</p><Button type="button" variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(value => !value)}><span>{open ? "Schliessen" : "Prüfen"}</span><ChevronDown className="size-4" /></Button></div>
++    {open && <div className="space-y-4">
++      <dl className="klar-approval-payload">{Object.entries(approval.payload).filter(([, value]) => value !== null && value !== undefined && value !== "").map(([key, value]) => <div key={key}><dt>{fieldLabels[key] ?? key}</dt><dd>{typeof value === "string" ? <MarkdownBody>{value}</MarkdownBody> : <pre>{JSON.stringify(value, null, 2)}</pre>}</dd></div>)}</dl>
++      <div className="flex gap-2"><Button type="button" disabled={decision.isPending || !needsApproval(approval)} onClick={() => decide(true)}><Check className="size-4" />Freigeben</Button><Button type="button" variant="outline" disabled={decision.isPending || !needsApproval(approval)} onClick={() => decide(false)}><X className="size-4" />Ablehnen</Button></div>
++    </div>}
++    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
++  </article>;
++}
++
++export function KlarAttention({ item, agentMap, currentUserId, onResolved }: { item: AttentionItem; agentMap: Map<string, Agent>; currentUserId?: string | null; onResolved: () => void }) {
++  const [open, setOpen] = useState(false);
++  const issueId = item.relatedIssue?.id ?? (typeof item.subject.metadata?.issueId === "string" ? item.subject.metadata.issueId : null);
++  // Preserve the native resolver for plans, tool actions, secrets and audience policies.
++  const inline = item.sourceKind === "issue_thread_interaction" && issueId && item.subject.companyId === item.companyId;
++  const href = item.subject.href;
++  const localHref = href && href.startsWith("/") && !href.startsWith("//") ? href : "/inbox";
++  return <article className="klar-decision" data-decision-id={item.id}>
++    <div className="flex items-center gap-2 text-xs font-medium"><Pin className="size-3.5" />Entscheidung offen</div>
++    <p className="font-medium break-words">{item.subject.title ?? item.relatedIssue?.title ?? "Deine Entscheidung wird benötigt"}</p>
++    {inline ? <><Button type="button" variant="outline" size="sm" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? "Details schliessen" : "Prüfen und entscheiden"}</Button>{open && <AttentionInteractionResolver companyId={item.companyId} issueId={issueId} interactionId={item.subject.id} agentMap={agentMap} currentUserId={currentUserId} onResolved={onResolved} />}</> : <Button variant="outline" size="sm" asChild><Link to={localHref}>Entscheidung mit allen Details öffnen</Link></Button>}
++  </article>;
++}
+\ No newline at end of file
+diff --git a/ui/src/components/KlarFilePreview.tsx b/ui/src/components/KlarFilePreview.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..5b8a53a46156f38a631f225847e7759b0cc88b9b
+--- /dev/null
++++ b/ui/src/components/KlarFilePreview.tsx
+@@ -0,0 +1,12 @@
++import { useEffect, useState } from "react";
++import { FileText, X } from "lucide-react";
++import { Button } from "./ui/button";
++
++export function KlarFilePreview({ file, onRemove, disabled }: { file: File; onRemove: () => void; disabled: boolean }) {
++  const [url, setUrl] = useState("");
++  useEffect(() => { const value = URL.createObjectURL(file); setUrl(value); return () => URL.revokeObjectURL(value); }, [file]);
++  return <div className="klar-file-preview">
++    {file.type.startsWith("image/") ? <img src={url} alt={file.name} /> : file.type.startsWith("audio/") ? <audio src={url} controls preload="metadata" aria-label={file.name} /> : <FileText className="size-6" />}
++    <span>{file.name}</span><Button type="button" size="icon" variant="ghost" disabled={disabled} onClick={onRemove} aria-label={`${file.name} entfernen`}><X className="size-4" /></Button>
++  </div>;
++}
+\ No newline at end of file
+diff --git a/ui/src/components/KlarNewTask.test.tsx b/ui/src/components/KlarNewTask.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..4ac061bb6b4739e1bab1c25a11bdff407a454ee9
+--- /dev/null
++++ b/ui/src/components/KlarNewTask.test.tsx
+@@ -0,0 +1,65 @@
++// @vitest-environment jsdom
++import { act, useState } from "react";
++import { createRoot, type Root } from "react-dom/client";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { afterEach, beforeEach, expect, it, vi } from "vitest";
++import type { Agent } from "@paperclipai/shared";
++import { KlarNewTask } from "./KlarNewTask";
++import { ApiError } from "../api/client";
++
++const api = vi.hoisted(() => ({ create: vi.fn() }));
++vi.mock("../api/issues", () => ({ issuesApi: api }));
++let root: Root, host: HTMLDivElement, client: QueryClient;
++const team = [{ id: "atlas", companyId: "c", name: "Atlas", status: "idle", role: "engineer" }, { id: "lead", companyId: "c", name: "Leitung", status: "running", role: "ceo" }] as Agent[];
++function Harness() {
++  const [draft, setDraft] = useState("");
++  return <KlarNewTask companyId="c" agents={team} ready open onOpenChange={() => {}} draft={draft} onDraftChange={setDraft} onCreated={() => {}} />;
++}
++async function fill(text: string) {
++  await act(async () => {
++    const field = document.querySelector("textarea")!;
++    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, text);
++    field.dispatchEvent(new Event("input", { bubbles: true }));
++  });
++}
++beforeEach(async () => {
++  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
++  api.create.mockReset();
++  client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
++  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
++  await act(async () => root.render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>));
++});
++afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); });
++
++it("offers just one field and submits the full message at highest priority once on Enter", async () => {
++  let finish!: (value: unknown) => void;
++  api.create.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
++  expect(document.querySelectorAll("textarea")).toHaveLength(1);
++  expect(document.querySelectorAll("input, select")).toHaveLength(0);
++  await fill("Aufgabe für Atlas, prüfe die Lieferzeiten.");
++  await act(async () => {
++    const field = document.querySelector("textarea")!;
++    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
++    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
++  });
++  expect(api.create).toHaveBeenCalledTimes(1);
++  expect(api.create).toHaveBeenCalledWith("c", expect.objectContaining({ assigneeAgentId: "atlas", priority: "critical", description: "Aufgabe für Atlas, prüfe die Lieferzeiten." }));
++  expect(api.create.mock.calls[0][1]).not.toHaveProperty("projectId");
++  await act(async () => finish({ assigneeAgentId: "atlas" }));
++  await vi.waitFor(() => expect(document.body.textContent).toContain("Aufgabe für Atlas gespeichert."));
++  expect(document.querySelector("textarea")!.value).toBe("");
++});
++it("does not submit while inserting a line break or confirming composition", async () => {
++  await fill("Bitte prüfen");
++  for (const modifiers of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }, { repeat: true }]) {
++    await act(async () => { document.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifiers })); });
++  }
++  expect(api.create).not.toHaveBeenCalled();
++});
++it("keeps the message after an expired login", async () => {
++  api.create.mockRejectedValue(new ApiError("Unauthorized", 401, {}));
++  await fill("Bitte die Angebote vergleichen");
++  await act(async () => { document.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(); });
++  await vi.waitFor(() => expect(document.body.textContent).toContain("Anmeldung ist abgelaufen"));
++  expect(document.querySelector("textarea")!.value).toBe("Bitte die Angebote vergleichen");
++});
+diff --git a/ui/src/components/KlarNewTask.tsx b/ui/src/components/KlarNewTask.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..0c2b31935aa225a2419e3676e83a33795c0498d9
+--- /dev/null
++++ b/ui/src/components/KlarNewTask.tsx
+@@ -0,0 +1,74 @@
++import { useRef, useState } from "react";
++import { useMutation } from "@tanstack/react-query";
++import type { Agent } from "@paperclipai/shared";
++import { ArrowUp, Loader2, X } from "lucide-react";
++import { issuesApi } from "../api/issues";
++import { ApiError } from "../api/client";
++import { priorityTaskPayload } from "../lib/klar-chat";
++import { Button } from "./ui/button";
++import { Textarea } from "./ui/textarea";
++import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog";
++
++interface Props {
++  companyId: string;
++  agents: Agent[];
++  ready: boolean;
++  open: boolean;
++  onOpenChange: (open: boolean) => void;
++  draft: string;
++  onDraftChange: (text: string) => void;
++  onCreated: () => void;
++}
++
++export function KlarNewTask({ companyId, agents, ready, open, onOpenChange, draft, onDraftChange, onCreated }: Props) {
++  const input = useRef<HTMLTextAreaElement>(null);
++  const locked = useRef(false);
++  const [problem, setProblem] = useState("");
++  const [receipt, setReceipt] = useState("");
++  const send = useMutation({
++    mutationFn: (payload: ReturnType<typeof priorityTaskPayload>) => issuesApi.create(companyId, payload),
++    retry: false,
++    onSuccess: issue => {
++      onDraftChange("");
++      const owner = agents.find(agent => agent.companyId === companyId && agent.id === issue.assigneeAgentId);
++      setReceipt(owner ? `Aufgabe für ${owner.name} gespeichert.` : "Aufgabe gespeichert.");
++      onCreated();
++      input.current?.focus();
++    },
++    onError: error => setProblem(error instanceof ApiError && error.status === 401
++      ? "Deine Anmeldung ist abgelaufen. Dein Text bleibt erhalten."
++      : error instanceof ApiError && error.status === 403
++        ? "Dir fehlt die Berechtigung für diese Aufgabe. Dein Text bleibt erhalten."
++        : "Das Speichern konnte nicht bestätigt werden. Prüfe den Verlauf vor einem erneuten Versuch, damit nichts doppelt angelegt wird."),
++    onSettled: () => { locked.current = false; },
++  });
++  function submit() {
++    if (!draft.trim() || !ready || locked.current) return;
++    setProblem(""); setReceipt("");
++    try {
++      const payload = priorityTaskPayload(draft, companyId, agents);
++      locked.current = true;
++      send.mutate(payload);
++    } catch (error) {
++      setProblem(error instanceof Error ? error.message : "Die Aufgabe konnte nicht zugeordnet werden.");
++    }
++  }
++  return <Dialog open={open} onOpenChange={value => { if (!locked.current) onOpenChange(value); }}>
++    <DialogContent className="klar-theme klar-new-task-dialog" showCloseButton={false} onOpenAutoFocus={event => { event.preventDefault(); input.current?.focus(); }} onEscapeKeyDown={event => { if (locked.current) event.preventDefault(); }} onPointerDownOutside={event => { if (locked.current) event.preventDefault(); }}>
++      <DialogTitle className="sr-only">Neue Aufgabe</DialogTitle>
++      <DialogDescription className="sr-only">Schreibe deine Aufgabe. Sie bekommt die höchste Priorität. Du kannst einen Bot am Anfang nennen; sonst übernimmt der Koordinations-Bot.</DialogDescription>
++      <Button type="button" variant="ghost" size="icon" className="klar-new-task-close" disabled={send.isPending} onClick={() => onOpenChange(false)} aria-label="Eingabe schliessen"><X className="size-4" /></Button>
++      <form className="klar-new-task-form" onSubmit={event => { event.preventDefault(); submit(); }}>
++        <Textarea ref={input} className="klar-chat-input klar-new-task-input" aria-label="Deine Aufgabe" placeholder="Was soll erledigt werden?" value={draft} disabled={send.isPending} enterKeyHint="send" onChange={event => { onDraftChange(event.target.value); setProblem(""); setReceipt(""); }} onKeyDown={event => {
++          if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
++          event.preventDefault();
++          if (!event.repeat) submit();
++        }} />
++        <div className="klar-new-task-send"><Button type="submit" size="icon" className="rounded-full" aria-label="Aufgabe senden" disabled={!draft.trim() || !ready || send.isPending}>{send.isPending ? <Loader2 className="size-5 animate-spin" /> : <ArrowUp className="size-5" />}</Button></div>
++        {!ready && <p role="status" className="text-sm text-muted-foreground">Bot-Zuordnung wird geladen. Dein Text bleibt erhalten.</p>}
++        {problem && <p role="alert" className="text-sm text-destructive">{problem}</p>}
++        {receipt && <p role="status" className="text-sm text-muted-foreground">{receipt}</p>}
++      </form>
++    </DialogContent>
++  </Dialog>;
++}
+diff --git a/ui/src/components/Layout.test.tsx b/ui/src/components/Layout.test.tsx
+index 6cdd9b836321680606f2475c368b889bf37598a2..7d0289207a1289fdaf9045bb56cb3051f986b362 100644
+--- a/ui/src/components/Layout.test.tsx
++++ b/ui/src/components/Layout.test.tsx
+@@ -280,6 +280,29 @@ describe("Layout", () => {
+     vi.clearAllMocks();
+   });
+ 
++  it("uses Klar navigation only on its exact company route and restores normal navigation", async () => {
++    const root = createRoot(container);
++    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
++    const render = async () => {
++      await act(async () => { root.render(<QueryClientProvider client={queryClient}><Layout /></QueryClientProvider>); });
++      await flushReact();
++    };
++    currentPathname = "/PAP/klar";
++    await render();
++    expect(container.querySelector(".klar-app-root")).not.toBeNull();
++    expect(container.textContent).toContain("Outlet content");
++    expect(container.textContent).not.toContain("Main company nav");
++    currentPathname = "/PAP/dashboard";
++    await render();
++    expect(container.querySelector(".klar-app-root")).toBeNull();
++    expect(container.textContent).toContain("Main company nav");
++    currentPathname = "/PAP/klar/unknown";
++    await render();
++    expect(container.querySelector(".klar-app-root")).toBeNull();
++    await act(async () => { root.unmount(); });
++    queryClient.clear();
++  });
++
+   it("does not render the deployment explainer in the shared layout", async () => {
+     const root = createRoot(container);
+     const queryClient = new QueryClient({
+diff --git a/ui/src/components/Layout.tsx b/ui/src/components/Layout.tsx
+index 205ff57c4afe91b2171824fe96f0d7187ee77581..58dd4e12555bbd9b55cbe33b3f9df17961450e2a 100644
+--- a/ui/src/components/Layout.tsx
++++ b/ui/src/components/Layout.tsx
+@@ -119,6 +119,7 @@ export function Layout() {
+     "/company/import",
+   ].some((settingsPath) => location.pathname.includes(settingsPath));
+   const companyPathSegments = getCompanyPathSegments(location.pathname, companyPrefix);
++  const isKlarRoute = companyPathSegments.length === 1 && companyPathSegments[0]?.toLowerCase() === "klar";
+   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
+   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
+   const appDetailConnectionId =
+@@ -409,7 +410,7 @@ export function Layout() {
+   useCompanyPageMemory();
+ 
+   useKeyboardShortcuts({
+-    enabled: keyboardShortcutsEnabled,
++    enabled: keyboardShortcutsEnabled && !isKlarRoute,
+     onNewIssue: () => openNewIssue(),
+     onSearch: openSearch,
+     onToggleSidebar: toggleSidebar,
+@@ -573,6 +574,22 @@ export function Layout() {
+     }
+   }, [location.key, location.pathname, location.state, navigationType]);
+ 
++  // Company routing and the authenticated App boundary remain shared. Klar only
++  // replaces the navigation shell; returning to any other route restores it.
++  if (isKlarRoute && !hasUnknownCompanyPrefix) return (
++    <GeneralSettingsProvider value={{ keyboardShortcutsEnabled: false }}>
++      <div className="klar-theme klar-app-root">
++        <a href="#main-content" className="sr-only focus:not-sr-only">Zum Inhalt</a>
++        <WorktreeBanner />
++        <DevRestartBanner devServer={health?.devServer} />
++        <main id="main-content" ref={mainContentRef} tabIndex={-1} className="outline-none">
++          <RouteErrorBoundary><Outlet /></RouteErrorBoundary>
++        </main>
++        <ToastViewport />
++      </div>
++    </GeneralSettingsProvider>
++  );
++
+   return (
+     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
+       <div
+diff --git a/ui/src/components/WorkOverview.tsx b/ui/src/components/WorkOverview.tsx
+index cd69a1402bd1ce18556cbb3161da14413f618ae8..70c1ba20e6d2e770d35009563b51d4d04a86049a 100644
+--- a/ui/src/components/WorkOverview.tsx
++++ b/ui/src/components/WorkOverview.tsx
+@@ -5,7 +5,6 @@ import { issuesApi } from "../api/issues";
+ import { Link } from "@/lib/router";
+ import { queryKeys } from "../lib/queryKeys";
+ import type { CompanyUserProfile } from "../lib/company-members";
+-import { timeAgo } from "../lib/timeAgo";
+ import { StatusIcon } from "./StatusIcon";
+ import { Card } from "./ui/card";
+ import { Button } from "./ui/button";
+@@ -13,6 +12,11 @@ import { Input } from "./ui/input";
+ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+ 
+ const PAGE_SIZE = 8;
++const updatedDate = new Intl.DateTimeFormat("de-CH", { day: "2-digit", month: "2-digit", year: "numeric" });
++function updatedLabel(value: Date | string) {
++  const date = new Date(value);
++  return Number.isNaN(date.getTime()) ? "Zeit unbekannt" : updatedDate.format(date);
++}
+ const views = [
+   { key: "open", label: "Offen", status: "backlog,todo,in_progress,in_review,blocked" },
+   { key: "running", label: "In Arbeit", status: "in_progress" },
+@@ -33,9 +37,10 @@ interface WorkOverviewProps {
+   userProfiles: Map<string, CompanyUserProfile>;
+   onNewTask: () => void;
+   initialView?: string;
++  onNavigate?: () => boolean;
+ }
+ 
+-export function WorkOverview({ companyId, agents, agentsError, userProfiles, onNewTask, initialView = "open" }: WorkOverviewProps) {
++export function WorkOverview({ companyId, agents, agentsError, userProfiles, onNewTask, initialView = "open", onNavigate }: WorkOverviewProps) {
+   const [viewKey, setViewKey] = useState<string>(initialView);
+   const [bundleRoutines, setBundleRoutines] = useState(true);
+   const [search, setSearch] = useState("");
+@@ -88,14 +93,14 @@ export function WorkOverview({ companyId, agents, agentsError, userProfiles, onN
+                 return (
+                   <Link key={task.id} to={`/issues/${task.identifier ?? task.id}`} className="block px-4 py-3 no-underline text-inherit hover:bg-accent/50 transition-colors">
+                     <div className="flex items-start gap-3">
+-                      <span className="shrink-0"><StatusIcon status={task.status} blockerAttention={task.blockerAttention} /></span>
++                      <span className="shrink-0" aria-hidden="true"><StatusIcon status={task.status} blockerAttention={task.blockerAttention} /></span>
+                       <div className="min-w-0 flex-1 space-y-1">
+                         <p className="line-clamp-2 text-sm font-medium">{task.title}</p>
+                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                           <span className="font-mono">{task.identifier ?? task.id.slice(0, 8)}</span>
+                           <span>{statusLabels[task.status]}</span>
+                           <span className={owner ? undefined : "text-destructive"}>{owner ?? "Verantwortung fehlt"}</span>
+-                          <span>{timeAgo(task.updatedAt)}</span>
++                          <span className="font-mono">{updatedLabel(task.updatedAt)}</span>
+                         </div>
+                       </div>
+                     </div>
+@@ -103,7 +108,13 @@ export function WorkOverview({ companyId, agents, agentsError, userProfiles, onN
+                 );
+   };
+   return (
+-    <section className="min-w-0 space-y-3" aria-label="Arbeitsübersicht">
++    <section className="min-w-0 space-y-3" aria-label="Arbeitsübersicht" onClickCapture={event => {
++      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
++      if ((event.target as HTMLElement).closest("a[href]") && onNavigate && !onNavigate()) {
++        event.preventDefault();
++        event.stopPropagation();
++      }
++    }}>
+       <div className="flex flex-wrap items-center justify-between gap-3">
+         <div>
+           <h2 className="text-lg font-semibold">Arbeitsübersicht</h2>
+diff --git a/ui/src/components/onboarding/PillGuy.tsx b/ui/src/components/onboarding/PillGuy.tsx
+index 588cfac87fec9b5a4f095fb219ba66648bf92f12..b865a1416b7a55402e2bf94b2ad5a98a52e253da 100644
+--- a/ui/src/components/onboarding/PillGuy.tsx
++++ b/ui/src/components/onboarding/PillGuy.tsx
+@@ -34,8 +34,8 @@ function DormantPill() {
+     <svg viewBox="0 0 100 93" fill="none" aria-hidden className="size-full">
+       <path d={BODY_PATH} fill={`url(#${DORMANT_GRADIENT_ID})`} />
+       {/* Closed eyes: the same rounded rects as the open pair, flattened. */}
+-      <rect x="75.9199" y="66.3047" width="9" height="4" rx="2" fill="#060606" />
+-      <rect x="28.9199" y="66.3047" width="9" height="4" rx="2" fill="#060606" />
++      <rect x="75.9199" y="66.3047" width="9" height="4" rx="2" fill="var(--brand-pill-eye)" />
++      <rect x="28.9199" y="66.3047" width="9" height="4" rx="2" fill="var(--brand-pill-eye)" />
+       <defs>
+         <linearGradient
+           id={DORMANT_GRADIENT_ID}
+@@ -45,8 +45,8 @@ function DormantPill() {
+           y2="107.486"
+           gradientUnits="userSpaceOnUse"
+         >
+-          <stop stopColor="#626262" />
+-          <stop offset="1" stopColor="#101010" />
++          <stop stopColor="var(--brand-pill-dormant-start)" />
++          <stop offset="1" stopColor="var(--brand-pill-dormant-end)" />
+         </linearGradient>
+       </defs>
+     </svg>
+@@ -57,9 +57,9 @@ function AlivePill() {
+   return (
+     <svg viewBox="0 0 100 93" fill="none" aria-hidden className="size-full">
+       <path d={BODY_PATH} fill={`url(#${ALIVE_GRADIENT_ID})`} />
+-      <rect x="76.1406" y="63.1328" width="8.87072" height="10.3492" rx="4.43536" fill="#060606" />
+-      <rect x="28.8301" y="63.1328" width="8.87072" height="10.3492" rx="4.43536" fill="#060606" />
+-      <path d={TUFT_PATH} fill="#2D200D" />
++      <rect x="76.1406" y="63.1328" width="8.87072" height="10.3492" rx="4.43536" fill="var(--brand-pill-eye)" />
++      <rect x="28.8301" y="63.1328" width="8.87072" height="10.3492" rx="4.43536" fill="var(--brand-pill-eye)" />
++      <path d={TUFT_PATH} fill="var(--brand-pill-tuft)" />
+       <defs>
+         <linearGradient
+           id={ALIVE_GRADIENT_ID}
+@@ -69,8 +69,8 @@ function AlivePill() {
+           y2="107.486"
+           gradientUnits="userSpaceOnUse"
+         >
+-          <stop stopColor="#3028AA" />
+-          <stop offset="1" stopColor="#FF0000" />
++          <stop stopColor="var(--brand-pill-alive-start)" />
++          <stop offset="1" stopColor="var(--brand-pill-alive-end)" />
+         </linearGradient>
+       </defs>
+     </svg>
+diff --git a/ui/src/components/useKlarVoice.test.tsx b/ui/src/components/useKlarVoice.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..37045bc042f3872d3439b3488e7b56b84da807a8
+--- /dev/null
++++ b/ui/src/components/useKlarVoice.test.tsx
+@@ -0,0 +1,64 @@
++// @vitest-environment jsdom
++import { act, useState } from "react";
++import { createRoot, type Root } from "react-dom/client";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { useKlarVoice } from "./useKlarVoice";
++
++let root: Root, host: HTMLDivElement;
++const files = vi.fn();
++class FakeSpeech {
++  static current: FakeSpeech;
++  lang = ""; continuous = false; interimResults = false;
++  onresult: ((event: { results: { 0: { transcript: string }; isFinal: boolean }[] }) => void) | null = null;
++  onerror: ((event: { error: string }) => void) | null = null;
++  onend: (() => void) | null = null;
++  start = vi.fn();
++  stop = vi.fn(() => this.onend?.());
++  abort = vi.fn();
++  constructor() { FakeSpeech.current = this; }
++}
++function Harness() {
++  const [text, setText] = useState("Bitte");
++  const voice = useKlarVoice({ text, onText: setText, onFile: files });
++  return <><output>{text}</output><button onClick={voice.dictate}>Diktieren</button><button onClick={() => { void voice.record(); }}>Aufnehmen</button><p role="status">{voice.mode}</p><p role="alert">{voice.error}</p></>;
++}
++beforeEach(async () => {
++  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
++  Object.defineProperty(window, "SpeechRecognition", { value: FakeSpeech, configurable: true });
++  Object.defineProperty(window, "webkitSpeechRecognition", { value: undefined, configurable: true });
++  files.mockReset();
++  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
++  await act(async () => root.render(<Harness />));
++});
++afterEach(async () => {
++  await act(async () => root.unmount()); host.remove();
++  Reflect.deleteProperty(window, "SpeechRecognition"); Reflect.deleteProperty(window, "webkitSpeechRecognition");
++});
++describe("Klar dictation", () => {
++  it("starts only on click and replaces interim text without duplicating it", async () => {
++    await act(async () => host.querySelector("button")!.click());
++    const speech = FakeSpeech.current;
++    expect(speech.start).toHaveBeenCalledTimes(1);
++    expect(speech.lang).toBe("de-CH");
++    await act(async () => speech.onresult?.({ results: [{ 0: { transcript: "den Knopf" }, isFinal: false }] }));
++    await act(async () => speech.onresult?.({ results: [{ 0: { transcript: "den Knopf vergrössern." }, isFinal: true }] }));
++    expect(host.querySelector("output")?.textContent).toBe("Bitte den Knopf vergrössern.");
++    expect(files).not.toHaveBeenCalled();
++    await act(async () => host.querySelector("button")!.click());
++    expect(speech.stop).toHaveBeenCalledTimes(1);
++  });
++  it("retains recognized text when microphone permission is revoked", async () => {
++    await act(async () => host.querySelector("button")!.click());
++    const speech = FakeSpeech.current;
++    await act(async () => { speech.onresult?.({ results: [{ 0: { transcript: "behalten" }, isFinal: true }] }); speech.onerror?.({ error: "not-allowed" }); speech.onend?.(); });
++    expect(host.querySelector("output")?.textContent).toBe("Bitte behalten");
++    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Mikrofonzugriff");
++  });
++  it("explains unsupported recognition without pretending to listen", async () => {
++    Reflect.deleteProperty(window, "SpeechRecognition");
++    await act(async () => root.render(<Harness />));
++    await act(async () => host.querySelector("button")!.click());
++    expect(host.querySelector('[role="alert"]')?.textContent).toContain("keine direkte Diktierfunktion");
++    expect(host.querySelector('[role="status"]')?.textContent).toBe("");
++  });
++});
+\ No newline at end of file
+diff --git a/ui/src/components/useKlarVoice.ts b/ui/src/components/useKlarVoice.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9bbfcfd6439102568ab4c3676cc3dfe901ff3b4e
+--- /dev/null
++++ b/ui/src/components/useKlarVoice.ts
+@@ -0,0 +1,84 @@
++import { useEffect, useRef, useState } from "react";
++
++interface RecognitionResult { isFinal: boolean; [index: number]: { transcript: string } }
++interface Recognition {
++  lang: string; continuous: boolean; interimResults: boolean;
++  onresult: ((event: { results: ArrayLike<RecognitionResult> }) => void) | null;
++  onerror: ((event: { error: string }) => void) | null;
++  onend: (() => void) | null; start: () => void; stop: () => void; abort: () => void;
++}
++type SpeechWindow = { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
++export function useKlarVoice({ text, onText, onFile }: { text: string; onText: (text: string) => void; onFile: (file: File) => void }) {
++  const [mode, setMode] = useState<"dictating" | "recording" | "starting" | null>(null);
++  const [error, setError] = useState("");
++  const recognition = useRef<Recognition | null>(null);
++  const recorder = useRef<MediaRecorder | null>(null);
++  const stream = useRef<MediaStream | null>(null);
++  const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
++  const active = useRef(true);
++  const callbacks = useRef({ onText, onFile });
++  callbacks.current = { onText, onFile };
++  const Speech = (window as unknown as SpeechWindow).SpeechRecognition ?? (window as unknown as SpeechWindow).webkitSpeechRecognition;
++  function stop() {
++    recognition.current?.stop();
++    if (recorder.current?.state === "recording") recorder.current.stop();
++    stream.current?.getTracks().forEach(track => track.stop());
++    if (timeout.current) clearTimeout(timeout.current);
++  }
++  useEffect(() => {
++    active.current = true;
++    return () => {
++      active.current = false;
++      recognition.current?.abort();
++      if (recorder.current?.state === "recording") recorder.current.stop();
++      stream.current?.getTracks().forEach(track => track.stop());
++      if (timeout.current) clearTimeout(timeout.current);
++    };
++  }, []);
++  function dictate() {
++    if (mode) { stop(); return; }
++    setError("");
++    if (!Speech) { setError("Dieser Browser bietet keine direkte Diktierfunktion. Nutze das Mikrofon deiner Tastatur oder nimm eine Sprachnotiz auf."); return; }
++    const speech = new Speech(); recognition.current = speech;
++    speech.lang = "de-CH"; speech.continuous = true; speech.interimResults = true;
++    const base = text.trimEnd();
++    speech.onresult = event => {
++      const words = Array.from(event.results).map(result => result[0].transcript).join(" ");
++      if (active.current) callbacks.current.onText([base, words].filter(Boolean).join(" "));
++    };
++    speech.onerror = event => {
++      if (active.current) setError(event.error === "not-allowed" ? "Bitte erlaube dem Browser den Mikrofonzugriff." : "Die Spracherkennung wurde unterbrochen. Der erkannte Text bleibt erhalten.");
++    };
++    speech.onend = () => { if (timeout.current) clearTimeout(timeout.current); recognition.current = null; if (active.current) setMode(null); };
++    try { speech.start(); setMode("dictating"); timeout.current = setTimeout(stop, 300_000); }
++    catch { setError("Die Spracherkennung konnte nicht gestartet werden."); }
++  }
++  async function record() {
++    if (mode) { stop(); return; }
++    setError("");
++    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") { setError("Sprachnotizen benötigen einen Browser mit Mikrofonzugriff über HTTPS."); return; }
++    setMode("starting");
++    try {
++      const media = await navigator.mediaDevices.getUserMedia({ audio: true });
++      if (!active.current) { media.getTracks().forEach(track => track.stop()); return; }
++      stream.current = media;
++      const mimeType = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find(type => MediaRecorder.isTypeSupported(type));
++      const recording = new MediaRecorder(media, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 64_000 });
++      recorder.current = recording;
++      const chunks: Blob[] = [];
++      recording.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
++      recording.onstop = () => {
++        media.getTracks().forEach(track => track.stop());
++        if (timeout.current) clearTimeout(timeout.current);
++        if (!active.current) return;
++        const type = recording.mimeType.split(";")[0];
++        const blob = new Blob(chunks, { type });
++        if (blob.size) callbacks.current.onFile(new File([blob], `Sprachnotiz-${new Date().toISOString().replace(/[:.]/g, "-")}.${type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm"}`, { type }));
++        setMode(null);
++      };
++      recording.onerror = () => { if (active.current) { setError("Die Aufnahme wurde unterbrochen."); setMode(null); } media.getTracks().forEach(track => track.stop()); };
++      recording.start(); setMode("recording"); timeout.current = setTimeout(stop, 300_000);
++    } catch { stream.current?.getTracks().forEach(track => track.stop()); if (active.current) { setMode(null); setError("Das Mikrofon konnte nicht geöffnet werden. Prüfe die Mikrofonfreigabe im Browser."); } }
++  }
++  return { mode, error, dictate, record, stop };
++}
+\ No newline at end of file
+diff --git a/ui/src/index.css b/ui/src/index.css
+index 6e75451d1dabc72254e75a1101e8b7278e7cddf1..8d25f9074ce264744653670e78eb85fb869b0a60 100644
+--- a/ui/src/index.css
++++ b/ui/src/index.css
+@@ -2480,3 +2480,137 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
+    * allow ui/src/pages/Projects.test.tsx — mock project color fixture
+    * allow ui/src/pages/Routines.test.tsx — mock routine/label color fixtures
+    ── end allowlist ── */
++
++/* Paperclip Klar: chat-first workspace. Visual values stay scoped to Klar. */
++.klar-theme,
++body:has(.klar-chat-app) [data-slot="dialog-content"],
++body:has(.klar-chat-app) [data-slot="popover-content"],
++body:has(.klar-chat-app) [data-slot="dropdown-menu-content"] {
++  color-scheme: light;
++  --background: #ffffff; --foreground: #111827; --card: #ffffff; --card-foreground: #111827;
++  --popover: #ffffff; --popover-foreground: #111827;
++  --primary: #2563eb; --primary-foreground: #ffffff; --secondary: #f0f6ff; --secondary-foreground: #1f2937;
++  --muted: #f1f5f9; --muted-foreground: #475569; --accent: #f1f5f9; --accent-foreground: #111827;
++  --border: #dce5ef; --input: #cbd5e1; --ring: #3b82f6;
++  --klar-rail: #f5f9ff; --klar-approval: #ecfdf5; --klar-approval-ink: #047857;
++  --klar-working: #059669; --klar-stopped: #dc2626; --klar-free: #94a3b8;
++  --klar-header-height: 3.25rem; --klar-rail-width: 14rem; --klar-chat-width: 48rem; --klar-touch: 2.75rem;
++  --klar-heading: clamp(1.8rem, 3vw, 2.75rem); --klar-page-pad: 2.25rem; --klar-chat-pad: 1.5rem;
++  --klar-avatar: 3rem; --klar-radius: 1.5rem; --klar-chat-input: 4.5rem;
++  --klar-shadow: 0 5px 22px -14px rgb(0 0 0 / 22%);
++  background: var(--background); color: var(--foreground);
++}
++.klar-app-root { min-height: 100dvh; }
++.klar-theme [data-slot="button"] { min-height: var(--klar-touch); }
++.klar-theme textarea, .klar-theme input, .klar-theme select { font-size: var(--text-base); }
++.klar-chat-app { display: grid; grid-template-columns: var(--klar-rail-width) minmax(0, 1fr); min-height: 100dvh; }
++.klar-chat-rail { display: flex; flex-direction: column; gap: 0.5rem; padding: 1.5rem 1rem; background: var(--klar-rail); border-right: 1px solid var(--border); }
++.klar-logo { display: flex; align-items: center; gap: 0.6rem; text-align: left; padding-bottom: 2rem; cursor: pointer; letter-spacing: -0.02em; }
++.klar-logo-mark { display: grid; place-items: center; width: 2.25rem; height: 2.25rem; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 1.5rem; font-weight: 600; font-style: italic; }
++.klar-advanced-link { display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; min-height: var(--klar-touch); color: var(--muted-foreground); }
++.klar-chat-main { min-width: 0; }
++.klar-app-header { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.25rem var(--klar-page-pad); height: var(--klar-header-height); background: var(--primary); color: var(--primary-foreground); }
++.klar-app-header select { background: transparent; min-height: var(--klar-touch); max-width: 70%; text-overflow: ellipsis; font-size: 0.875rem; color: var(--muted-foreground); }
++.klar-bot-overview { max-width: var(--klar-chat-width); margin-inline: auto; padding: 1rem var(--klar-chat-pad); }
++.klar-bot-list { display: flex; flex-direction: column; gap: 0.4rem; }
++.klar-bot-row { display: flex; gap: 1rem; align-items: center; padding: 1.2rem 0.9rem; border-radius: 1rem; text-align: left; cursor: pointer; border: 1px solid transparent; width: 100%; }
++.klar-bot-row:hover, .klar-bot-row:focus-visible { background: var(--card); border-color: var(--border); }
++.klar-bot-row[data-bot-rank="0"] { background: var(--card); border-color: var(--border); box-shadow: var(--klar-shadow); }
++.klar-avatar { width: var(--klar-avatar); height: var(--klar-avatar); display: grid; place-items: center; border-radius: 50%; background: var(--secondary); color: var(--foreground); font-size: 0.85rem; font-weight: 600; position: relative; flex-shrink: 0; }
++.klar-status-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; border: 2px solid var(--background); position: absolute; right: 0; bottom: 0; background: var(--klar-free); }
++[data-bot-rank="0"] .klar-status-dot { background: var(--klar-approval-ink); }
++[data-bot-rank="1"] .klar-status-dot { background: var(--klar-working); }
++[data-bot-rank="2"] .klar-status-dot { background: var(--klar-stopped); }
++.klar-bot-row-content { display: grid; gap: 0.4rem; flex: 1; min-width: 0; }
++.klar-bot-row-title { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
++.klar-bot-row-title strong { font-size: 0.95rem; font-weight: 600; overflow-wrap: anywhere; }
++.klar-approval-badge { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.3rem 0.5rem; border-radius: 0.5rem; background: var(--klar-approval); color: var(--klar-approval-ink); font-size: 0.7rem; white-space: nowrap; }
++.klar-bot-state { color: var(--muted-foreground); font-size: 0.7rem; white-space: nowrap; }
++.klar-bot-preview { display: block; font-size: 0.8rem; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
++.klar-unassigned { margin-bottom: 1.25rem; background: var(--klar-approval); border-radius: 1rem; padding: 0.5rem; }
++.klar-unassigned > button { white-space: normal; height: auto; text-align: left; }
++.klar-data-error { margin: 0.5rem 1rem; font-size: 0.8rem; color: var(--destructive); }
++.klar-conversation { display: flex; flex-direction: column; height: calc(100dvh - var(--klar-header-height) - var(--klar-preview-offset, 0rem)); min-height: 0; max-width: var(--klar-chat-width); margin-inline: auto; }
++.klar-chat-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem var(--klar-chat-pad); border-bottom: 1px solid var(--border); }
++.klar-chat-header .klar-avatar { --klar-avatar: 2.5rem; }
++.klar-chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 1rem var(--klar-chat-pad) 0.75rem; scroll-behavior: smooth; }
++.klar-chat-stream { display: flex; flex-direction: column; gap: 1.25rem; padding-bottom: 1.25rem; }
++.klar-empty-chat { min-height: 14rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; text-align: center; }
++.klar-empty-chat h2 { font-size: 1.8rem; font-weight: 500; letter-spacing: -0.035em; }
++.klar-empty-chat p { font-size: 0.85rem; color: var(--muted-foreground); }
++.klar-message { max-width: 90%; min-width: 0; }
++.klar-task-message { align-self: flex-end; }
++.klar-bot-message { align-self: flex-start; }
++.klar-message-meta { display: flex; align-items: center; justify-content: space-between; gap: 1rem; font-size: 0.65rem; color: var(--muted-foreground); margin: 0 0.4rem 0.4rem; }
++.klar-message-body { padding: 1rem; border-radius: 1rem; overflow-wrap: anywhere; font-size: 0.875rem; line-height: 1.65; }
++.klar-task-message .klar-message-body { background: var(--secondary); }
++.klar-bot-message .klar-message-body { padding-inline: 0.4rem; }
++.klar-task-open { display: grid; gap: 0.6rem; text-align: left; cursor: pointer; min-height: var(--klar-touch); }
++.klar-task-open strong { font-weight: 500; font-size: 0.95rem; }
++.klar-message-reference { display: block; font-size: 0.7rem; color: var(--muted-foreground); text-align: left; margin-bottom: 0.5rem; cursor: pointer; min-height: var(--klar-touch); }
++.klar-reply-button { color: var(--muted-foreground); font-size: 0.7rem; }
++.klar-pinned-decisions { position: sticky; bottom: 0; display: grid; gap: 0.5rem; background: var(--background); padding-top: 0.5rem; max-height: 50dvh; overflow-y: auto; }
++.klar-decision { display: grid; gap: 0.65rem; padding: 1rem; border: 1px solid var(--border); border-radius: 1rem; background: var(--klar-approval); color: var(--foreground); font-size: 0.875rem; }
++.klar-approval-payload { display: grid; gap: 1rem; }
++.klar-approval-payload dt { font-size: 0.7rem; font-weight: 600; color: var(--muted-foreground); margin-bottom: 0.3rem; }
++.klar-approval-payload pre { font-size: 0.75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
++.klar-composer-dock { padding: 0.5rem var(--klar-chat-pad) max(1rem, env(safe-area-inset-bottom)); }
++.klar-chat-composer { background: var(--card); border: 1px solid var(--border); border-radius: var(--klar-radius); padding: 0.75rem; box-shadow: var(--klar-shadow); }
++.klar-theme .klar-chat-input { min-height: var(--klar-chat-input); max-height: 10rem; border: 0; resize: vertical; background: transparent; box-shadow: none; padding: 0.4rem 0.5rem; line-height: 1.5; }
++.klar-theme .klar-chat-input:focus-visible { box-shadow: none; outline: none; }
++.klar-chat-composer:focus-within { border-color: var(--ring); }
++.klar-new-task-dialog { gap: 0; padding: 1rem; border-radius: var(--klar-radius); }
++.klar-new-task-form { display: flex; flex-direction: column; gap: 0.5rem; }
++.klar-new-task-close { position: absolute; top: 0.5rem; right: 0.5rem; }
++.klar-theme .klar-new-task-input { min-height: 9rem; max-height: 45dvh; margin-top: 2rem; }
++.klar-new-task-send { display: flex; justify-content: flex-end; }
++.klar-send-row { display: flex; align-items: center; justify-content: space-between; gap: 0.25rem; }
++.klar-composer-mode { margin-left: auto; margin-right: 0.5rem; color: var(--muted-foreground); font-size: 0.65rem; }
++.klar-reply-target { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.5rem; font-size: 0.7rem; color: var(--muted-foreground); border-bottom: 1px solid var(--border); }
++.klar-reply-target > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.klar-details { max-height: 85dvh; overflow-y: auto; }
++.klar-attachments { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.5rem; max-height: 12rem; overflow-y: auto; }
++.klar-file-preview { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; border: 1px solid var(--border); border-radius: 0.75rem; padding: 0.35rem; }
++.klar-file-preview img { width: 3rem; height: 3rem; object-fit: cover; border-radius: 0.5rem; }
++.klar-file-preview audio { max-width: 100%; width: 100%; height: 2.5rem; }
++.klar-file-preview > span { flex: 1; min-width: 0; font-size: 0.7rem; overflow-wrap: anywhere; }
++@media (max-width: 48rem) {
++  .klar-chat-app { display: block; }
++  .klar-chat-rail { display: none; }
++  .klar-theme { --klar-chat-pad: 1rem; --klar-page-pad: 1rem; }
++  .klar-bot-overview { padding-top: 0.75rem; }
++  .klar-bot-row { padding: 1rem 0.4rem; gap: 0.75rem; }
++  .klar-bot-row-title { align-items: flex-start; flex-direction: column; gap: 0.35rem; }
++  .klar-bot-state { font-size: 0.65rem; }
++  .klar-message { max-width: 94%; }
++  .klar-pinned-decisions { max-height: 40dvh; }
++}
++@media (prefers-reduced-motion: reduce) {
++  .klar-chat-scroll { scroll-behavior: auto; }
++}
++.klar-preview { --klar-preview-offset: 1.5rem; }
++.klar-preview-note { height: var(--klar-preview-offset); display: grid; place-items: center; padding: 0.3rem 0.5rem; font-size: 0.7rem; text-align: center; color: var(--muted-foreground); background: var(--secondary); }
++.klar-preview .klar-chat-app { min-height: calc(100dvh - var(--klar-preview-offset)); }
++.klar-message-attachments { display: grid; gap: 0.6rem; margin-top: 0.5rem; }
++.klar-message-attachment { display: grid; gap: 0.5rem; max-width: 100%; }
++.klar-message-attachment img { max-width: 100%; max-height: 18rem; border-radius: 0.75rem; object-fit: contain; }
++.klar-message-attachment audio { max-width: 100%; }
++.klar-message-attachment > a { display: flex; align-items: center; gap: 0.5rem; min-height: var(--klar-touch); overflow-wrap: anywhere; font-size: 0.75rem; }
++/* Fixed onboarding brand colors; identical in both application themes. */
++:root {
++  --brand-pill-eye: #060606;
++  --brand-pill-dormant-start: #626262;
++  --brand-pill-dormant-end: #101010;
++  --brand-pill-tuft: #2D200D;
++  --brand-pill-alive-start: #3028AA;
++  --brand-pill-alive-end: #FF0000;
++}
++.klar-app-header select { color: var(--primary-foreground); font-weight: 600; }
++.klar-app-header option { background: var(--card); color: var(--foreground); }
++.klar-app-header [data-slot="button"] { color: var(--primary-foreground); }
++.klar-app-header [data-slot="button"]:hover { background: #1d4ed8; }
++.klar-avatar { background: #dbeafe; color: #1d4ed8; }
++.klar-bot-row:hover, .klar-bot-row:focus-visible { background: #eff6ff; border-color: #93c5fd; }
++.klar-bot-row[data-bot-rank="0"] { border-color: #93c5fd; }
++.klar-task-message .klar-message-body { background: #eff6ff; border: 1px solid #bfdbfe; }
++.klar-advanced-link { margin-top: auto; }
+diff --git a/ui/src/lib/klar-chat.test.ts b/ui/src/lib/klar-chat.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d90af9174b92b56aab3b3f54158250d602db0d7d
+--- /dev/null
++++ b/ui/src/lib/klar-chat.test.ts
+@@ -0,0 +1,80 @@
++import { describe, expect, it, vi, beforeEach } from "vitest";
++import type { Agent, CompactIssue, IssueComment } from "@paperclipai/shared";
++import { botRank, chatTimeline, decisionAgentId, newTaskAgent, priorityTaskPayload } from "./klar-chat";
++import { sendKlarMessage, type KlarSendProgress } from "./klar-send";
++const api = vi.hoisted(() => ({ create: vi.fn(), uploadAttachment: vi.fn(), update: vi.fn(), addComment: vi.fn() }));
++vi.mock("../api/issues", () => ({ issuesApi: api }));
++beforeEach(() => Object.values(api).forEach(mock => mock.mockReset()));
++
++describe("Klar chat rules", () => {
++  const team = [{ id: "atlas", companyId: "c", name: "Atlas", status: "idle", role: "engineer" }, { id: "lead", companyId: "c", name: "Leitung", status: "running", role: "ceo" }] as Agent[];
++  it("routes a named priority task without title, project or priority input fields", () => {
++    for (const text of ["Aufgabe für Atlas, vergleiche die Preise", "Atlas: vergleiche die Preise", "@Atlas vergleiche die Preise"]) {
++      expect(priorityTaskPayload(text, "c", team)).toEqual({ title: text, description: text, assigneeAgentId: "atlas", status: "todo", priority: "critical", workMode: "standard" });
++    }
++    expect(newTaskAgent("Vergleiche die Preise", "c", team).id).toBe("lead");
++  });
++  it("does not silently reroute unknown, ambiguous or unavailable named bots", () => {
++    expect(() => newTaskAgent("Aufgabe für Unbekannt, prüfen", "c", team)).toThrow("finde ich nicht");
++    expect(() => newTaskAgent("Atlas, prüfen", "c", [...team, { ...team[0], id: "duplicate" }])).toThrow("nicht eindeutig");
++    expect(() => newTaskAgent("Atlas, prüfen", "c", [{ ...team[0], status: "paused" }, team[1]])).toThrow("nicht einsatzbereit");
++    expect(() => newTaskAgent("Bitte prüfen", "c", [team[0]])).toThrow("nicht eindeutig");
++  });
++  it("cannot assign a new task to a bot or coordinator in another company", () => {
++    expect(() => newTaskAgent("Aufgabe für Atlas, prüfen", "other", team)).toThrow("finde ich nicht");
++    expect(() => newTaskAgent("Bitte prüfen", "other", team)).toThrow("nicht eindeutig");
++  });
++  it("ranks decisions, working, stopped and idle bots in the requested order", () => {
++    const make = (id: string, status: string) => ({ id, name: id, status }) as Agent;
++    const bots = [make("idle", "idle"), make("error", "error"), make("busy", "running"), make("approval", "idle")];
++    expect(bots.sort((a, b) => botRank(a, a.id === "approval" ? 1 : 0, []) - botRank(b, b.id === "approval" ? 1 : 0, [])).map(bot => bot.id)).toEqual(["approval", "busy", "error", "idle"]);
++  });
++  it("does not mistake a completed run for a running bot", () => {
++    const bot = { id: "a", status: "idle" } as Agent;
++    expect(botRank(bot, 0, [{ agentId: "a", status: "succeeded", finishedAt: "today" }] as never)).toBe(3);
++  });
++  it("merges task and reply timestamps without crossing company boundaries or showing deleted comments", () => {
++    const tasks = [{ id: "t", companyId: "c", createdAt: new Date("2026-01-01") }] as CompactIssue[];
++    const comment = { id: "b", issueId: "t", companyId: "c", createdAt: new Date("2026-01-03") } as IssueComment;
++    expect(chatTimeline(tasks, [comment, { ...comment, id: "a", createdAt: new Date("2026-01-02") }, { ...comment, id: "foreign", companyId: "other" }, { ...comment, id: "deleted", deletedAt: new Date() }]).map(event => event.id)).toEqual(["task-t", "comment-a", "comment-b"]);
++  });
++  it("maps decisions by stable identities rather than display names", () => {
++    expect(decisionAgentId({ subject: { metadata: { createdByAgentId: "agent-id" } }, originAgentName: "Same name" } as never)).toBe("agent-id");
++    expect(decisionAgentId({ subject: {}, originAgentName: "Same name" } as never)).toBeNull();
++  });
++});
++describe("Attachment handoff", () => {
++  const createProgress = (): KlarSendProgress => ({ companyId: "c", agentId: "a", text: "Nutze die Dateien.", files: [{ name: "one.pdf" }, { name: "two.png" }] as File[], target: null, attachments: [], committing: false });
++  it("keeps a partial upload as an unassigned draft and resumes without creating a second task", async () => {
++    const progress = createProgress();
++    api.create.mockResolvedValue({ id: "draft" });
++    api.uploadAttachment.mockResolvedValueOnce({ id: "f1", originalFilename: "one.pdf" }).mockRejectedValueOnce(new Error("offline"));
++    await expect(sendKlarMessage(progress)).rejects.toThrow("offline");
++    expect(api.update).not.toHaveBeenCalled();
++    expect(api.create.mock.calls[0][1]).not.toHaveProperty("assigneeAgentId");
++    expect(progress.attachments).toHaveLength(1);
++    api.uploadAttachment.mockResolvedValueOnce({ id: "f2", originalFilename: "two.png" });
++    api.update.mockResolvedValue({ id: "draft" });
++    await sendKlarMessage(progress);
++    expect(api.create).toHaveBeenCalledTimes(1);
++    expect(api.update).toHaveBeenCalledWith("draft", expect.objectContaining({ status: "todo", assigneeAgentId: "a" }));
++    expect(api.update.mock.calls[0][1].description).toContain("/api/attachments/f1/content");
++    expect(api.update.mock.calls[0][1].description).toContain("/api/attachments/f2/content");
++  });
++  it("does not repeat a final write when its outcome is unknown", async () => {
++    const progress = createProgress(); progress.files = [];
++    api.create.mockResolvedValue({ id: "draft" });
++    api.update.mockRejectedValue(new Error("connection lost"));
++    await expect(sendKlarMessage(progress)).rejects.toThrow("connection lost");
++    await expect(sendKlarMessage(progress)).rejects.toThrow("geprüft");
++    expect(api.update).toHaveBeenCalledTimes(1);
++  });
++  it("uploads before notifying an existing task", async () => {
++    const progress = createProgress(); progress.target = { id: "existing" } as never;
++    api.uploadAttachment.mockResolvedValue({ id: "file", originalFilename: "doc.pdf" });
++    await sendKlarMessage(progress);
++    expect(api.create).not.toHaveBeenCalled();
++    expect(api.addComment).toHaveBeenCalledWith("existing", expect.stringContaining("/api/attachments/file/content"));
++    expect(api.addComment.mock.invocationCallOrder[0]).toBeGreaterThan(api.uploadAttachment.mock.invocationCallOrder[1]);
++  });
++});
+diff --git a/ui/src/lib/klar-chat.ts b/ui/src/lib/klar-chat.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..130ffca2dc4ae9b8910883ea3a60434509d1fccb
+--- /dev/null
++++ b/ui/src/lib/klar-chat.ts
+@@ -0,0 +1,62 @@
++import type { Agent, Approval, AttentionItem, CompactIssue, IssueComment } from "@paperclipai/shared";
++import type { LiveRunForIssue } from "../api/heartbeats";
++
++export const taskLabels: Record<string, string> = { backlog: "Geplant", todo: "Bereit", in_progress: "In Arbeit", in_review: "In Prüfung", blocked: "Blockiert", done: "Erledigt gemeldet", cancelled: "Abgebrochen" };
++export const botLabels: Record<string, string> = { running: "Arbeitet", idle: "Hat gerade nichts zu tun", active: "Bereit", paused: "Pausiert", error: "Fehler – braucht Hilfe", terminated: "Gestoppt", pending_approval: "Einrichtung offen" };
++export const needsApproval = (approval: Approval) => ["pending", "revision_requested"].includes(approval.status);
++export const isRunning = (run: LiveRunForIssue) => run.status === "running" && !run.finishedAt;
++
++export function decisionAgentId(item: AttentionItem): string | null {
++  const metadata = item.subject.metadata;
++  const value = metadata?.createdByAgentId ?? metadata?.requestedByAgentId ?? item.resolverAudience?.createdByAgentId;
++  return typeof value === "string" ? value : null;
++}
++
++/** Dismissed cards must not hide an unresolved decision. */
++export function botRank(agent: Agent, approvalCount: number, runs: LiveRunForIssue[]): number {
++  if (approvalCount > 0 || agent.status === "pending_approval") return 0;
++  if (agent.status === "running" || runs.some(run => run.agentId === agent.id && isRunning(run))) return 1;
++  if (["paused", "error", "terminated"].includes(agent.status)) return 2;
++  return 3;
++}
++
++export function chatTaskPayload(text: string, agentId: string) {
++  const body = text.trim();
++  if (!body || !agentId) throw new Error("Nachricht und Bot fehlen.");
++  return { title: Array.from(body.split(/\r?\n/)[0]).slice(0, 160).join(""), description: body, assigneeAgentId: agentId, status: "todo", priority: "medium", workMode: "standard" };
++}
++
++/** Resolve only an explicit name at the start; otherwise use this company's CEO. */
++export function newTaskAgent(text: string, companyId: string, agents: Agent[]): Agent {
++  const team = agents.filter(agent => agent.companyId === companyId);
++  const body = text.trim();
++  const explicit = /^(?:(?:aufgabe|auftrag)\s+(?:für|an)\s+|@)/iu.test(body);
++  const address = body.replace(/^(?:aufgabe|auftrag)\s+(?:für|an)\s+/iu, "").replace(/^@/, "");
++  const named = team.filter(agent => {
++    const escaped = agent.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
++    return new RegExp(`^${escaped}(?:\\s|[:,.!?]|$)`, "iu").test(address);
++  }).sort((a, b) => b.name.length - a.name.length);
++  if (explicit && !named.length) throw new Error("Diesen Bot finde ich nicht. Nenne seinen vollständigen Namen am Anfang der Nachricht.");
++  const candidates = named.length ? named.filter(agent => agent.name.length === named[0].name.length) : team.filter(agent => agent.role === "ceo");
++  if (candidates.length !== 1) throw new Error(named.length ? "Der Bot-Name ist nicht eindeutig. Bitte verwende einen eindeutigen Namen." : "Die automatische Zuordnung ist nicht eindeutig. Beginne mit dem Namen eines Bots, zum Beispiel: Atlas, …");
++  const agent = candidates[0];
++  if (!["idle", "active", "running"].includes(agent.status)) throw new Error(`${agent.name} ist gerade nicht einsatzbereit. Deine Nachricht bleibt erhalten.`);
++  return agent;
++}
++
++export function priorityTaskPayload(text: string, companyId: string, agents: Agent[]) {
++  const agent = newTaskAgent(text, companyId, agents);
++  return { ...chatTaskPayload(text, agent.id), priority: "critical" };
++}
++
++export type KlarReplyTarget = Pick<CompactIssue, "id" | "companyId" | "assigneeAgentId" | "identifier" | "title" | "status">;
++export type ChatEvent = { id: string; at: Date; task: CompactIssue; comment?: IssueComment };
++export function chatTimeline(tasks: CompactIssue[], comments: IssueComment[]): ChatEvent[] {
++  const byId = new Map(tasks.map(task => [task.id, task]));
++  const events: ChatEvent[] = tasks.map(task => ({ id: `task-${task.id}`, at: new Date(task.createdAt), task }));
++  for (const comment of comments) {
++    const task = byId.get(comment.issueId);
++    if (task && comment.companyId === task.companyId && !comment.deletedAt) events.push({ id: `comment-${comment.id}`, at: new Date(comment.createdAt), task, comment });
++  }
++  return events.sort((a, b) => a.at.getTime() - b.at.getTime() || a.id.localeCompare(b.id));
++}
+diff --git a/ui/src/lib/klar-send.ts b/ui/src/lib/klar-send.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..901190986387865860dfc6f8bb78aec99747cf67
+--- /dev/null
++++ b/ui/src/lib/klar-send.ts
+@@ -0,0 +1,31 @@
++import type { Issue, IssueAttachment } from "@paperclipai/shared";
++import { issuesApi } from "../api/issues";
++import { chatTaskPayload, type KlarReplyTarget } from "./klar-chat";
++
++export interface KlarSendProgress {
++  companyId: string; agentId: string; text: string; files: File[]; target: KlarReplyTarget | null;
++  created?: Issue; attachments: IssueAttachment[]; committing: boolean;
++}
++/** Create an unassigned draft first; hand off only after every attachment exists. */
++export async function sendKlarMessage(progress: KlarSendProgress): Promise<Issue | undefined> {
++  if (progress.committing) throw new Error("Der letzte Versand muss im Verlauf geprüft werden.");
++  if (!progress.target && !progress.created) {
++    progress.created = await issuesApi.create(progress.companyId, {
++      title: chatTaskPayload(progress.text || progress.files[0]?.name || "Neue Aufgabe", progress.agentId).title,
++      description: progress.text, status: "backlog", priority: "medium", workMode: "standard",
++    });
++  }
++  const issueId = progress.target?.id ?? progress.created!.id;
++  for (let index = progress.attachments.length; index < progress.files.length; index++) {
++    progress.attachments.push(await issuesApi.uploadAttachment(progress.companyId, issueId, progress.files[index]));
++  }
++  const links = progress.attachments.map(attachment => {
++    const name = (attachment.originalFilename ?? "Anhang").replace(/[\[\]\\]/g, "");
++    return `[${name}](/api/attachments/${encodeURIComponent(attachment.id)}/content)`;
++  });
++  const body = [progress.text.trim(), links.join("\n")].filter(Boolean).join("\n\n");
++  progress.committing = true;
++  // An uncertain final write is never retried automatically.
++  if (progress.target) { await issuesApi.addComment(issueId, body); return undefined; }
++  return issuesApi.update(issueId, { description: body, status: "todo", assigneeAgentId: progress.agentId });
++}
+\ No newline at end of file
+diff --git a/ui/src/pages/PaperclipKlar.tsx b/ui/src/pages/PaperclipKlar.tsx
+index 60633421e6ff8e1fa1f85b7799025270afffc4d5..dff2c28d6f0d5196d88b650d1a8ae0d2f4e7f748 100644
+--- a/ui/src/pages/PaperclipKlar.tsx
++++ b/ui/src/pages/PaperclipKlar.tsx
+@@ -1,94 +1,105 @@
+ import { useEffect, useMemo, useState } from "react";
+ import { useQuery } from "@tanstack/react-query";
+-import { Clock3, CirclePause, ShieldCheck, CircleCheck, RefreshCw } from "lucide-react";
+-import { Link } from "@/lib/router";
++import { Bot, ChevronRight, Inbox, LayoutDashboard, Menu, MessageCircle, Plus, RefreshCw, ShieldCheck, SquarePen } from "lucide-react";
++import { Link, useNavigate } from "@/lib/router";
+ import { useCompany } from "../context/CompanyContext";
+ import { useBreadcrumbs } from "../context/BreadcrumbContext";
+-import { useDialogActions } from "../context/DialogContext";
+-import { dashboardApi } from "../api/dashboard";
++import { issuesApi } from "../api/issues";
+ import { agentsApi } from "../api/agents";
+-import { accessApi } from "../api/access";
++import { approvalsApi } from "../api/approvals";
++import { attentionApi } from "../api/attention";
++import { heartbeatsApi } from "../api/heartbeats";
++import { authApi } from "../api/auth";
+ import { queryKeys } from "../lib/queryKeys";
+-import { buildCompanyUserProfileMap } from "../lib/company-members";
+-import { WorkOverview } from "../components/WorkOverview";
+-import { Card } from "../components/ui/card";
++import { botLabels, botRank, decisionAgentId, isRunning, needsApproval } from "../lib/klar-chat";
++import { KlarBotChat, type ChatDraft } from "../components/KlarBotChat";
++import { KlarApproval, KlarAttention } from "../components/KlarDecision";
++import { KlarNewTask } from "../components/KlarNewTask";
+ import { Button } from "../components/ui/button";
+-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
++import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
+ 
+-const agentLabels: Record<string, string> = {
+-  running: "Arbeitet", idle: "Bereit", active: "Bereit", paused: "Pausiert",
+-  error: "Fehler gemeldet", terminated: "Beendet", pending_approval: "Wartet auf Freigabe",
+-};
+-
+-/** Native board route: session, company authorization and mutations stay in Paperclip. */
+ export function PaperclipKlar() {
+   const { selectedCompanyId } = useCompany();
+   const { setBreadcrumbs } = useBreadcrumbs();
+   useEffect(() => { setBreadcrumbs([{ label: "Paperclip Klar" }]); }, [setBreadcrumbs]);
+-  return selectedCompanyId
+-    ? <CompanyKlar key={selectedCompanyId} companyId={selectedCompanyId} />
+-    : <p role="status">Bitte zuerst eine Firma auswählen.</p>;
++  return selectedCompanyId ? <CompanyKlar key={selectedCompanyId} companyId={selectedCompanyId} /> : <p role="status">Bitte zuerst eine Firma auswählen.</p>;
+ }
+-
+ function CompanyKlar({ companyId }: { companyId: string }) {
+-  const { selectedCompany } = useCompany();
+-  const { openNewIssue } = useDialogActions();
+-  const [tab, setTab] = useState("overview");
+-  const [taskView, setTaskView] = useState("open");
+-  const summary = useQuery({
+-    queryKey: queryKeys.dashboard(companyId), queryFn: () => dashboardApi.summary(companyId),
+-    refetchInterval: 30_000, refetchOnWindowFocus: "always",
+-  });
+-  const agents = useQuery({
+-    queryKey: queryKeys.agents.list(companyId), queryFn: () => agentsApi.list(companyId),
+-    refetchInterval: 30_000, refetchOnWindowFocus: "always",
+-  });
+-  const directory = useQuery({
+-    queryKey: queryKeys.access.companyUserDirectory(companyId),
+-    queryFn: () => accessApi.listUserDirectory(companyId),
+-  });
+-  const profiles = useMemo(() => buildCompanyUserProfileMap(directory.data?.users), [directory.data]);
+-  const selectTasks = (view: string) => { setTaskView(view); setTab("overview"); };
+-  const refresh = () => { void summary.refetch(); void agents.refetch(); };
+-  const counts = summary.isError ? undefined : summary.data;
+-  const team = agents.isError ? [] : agents.data ?? [];
+-  const metrics = [
+-    { label: "In Arbeit", value: counts?.tasks.inProgress, hint: "Bearbeitung eingetragen", Icon: Clock3, view: "running" },
+-    { label: "Blockiert", value: counts?.tasks.blocked, hint: "Ein Hindernis hält auf", Icon: CirclePause, view: "blocked" },
+-    { label: "Offene Freigaben", value: counts?.pendingApprovals, hint: "Eine Freigabe steht aus", Icon: ShieldCheck, to: "/approvals" },
+-    { label: "Erledigt gemeldet", value: counts?.tasks.done, hint: "Ergebnis im Auftrag prüfen", Icon: CircleCheck, view: "done" },
+-  ];
+-  return <div className="space-y-6 min-w-0">
+-    <header className="flex flex-wrap items-start justify-between gap-4">
+-      <div className="space-y-2"><p className="text-sm text-muted-foreground">{selectedCompany?.name} · Paperclip Klar</p><h1 className="text-3xl font-semibold tracking-tight">Dein KI-Büro im Überblick</h1><p className="text-base text-muted-foreground">Was läuft, wo es hängt und wer sich darum kümmert.</p></div>
+-      <Button variant="outline" disabled={summary.isFetching || agents.isFetching} onClick={refresh}><RefreshCw className="size-4" />Übersicht aktualisieren</Button>
+-    </header>
+-    <p className="text-sm text-muted-foreground" role="status">Direkt aus Paperclip · Aktualisierung alle 30 Sekunden bei geöffneter Ansicht.{summary.dataUpdatedAt > 0 && !summary.isError ? ` Firmenzahlen geladen um ${new Date(summary.dataUpdatedAt).toLocaleTimeString("de-CH")}.` : ""}</p>
+-    {summary.isError && <p role="alert" className="text-sm text-destructive">Firmenzahlen konnten nicht geladen werden. Bitte erneut aktualisieren; bei abgelaufener Sitzung neu anmelden.</p>}
+-    <Card className="grid grid-cols-2 lg:grid-cols-4 gap-0 py-0 overflow-hidden">
+-      {metrics.map(({label, value, hint, Icon, view, to}) => {
+-        const inner = <><span className="flex items-center justify-between gap-2 text-sm text-muted-foreground">{label}<Icon className="size-4 shrink-0" /></span><strong className="text-3xl font-semibold tabular-nums">{value ?? "—"}</strong><span className="text-sm text-muted-foreground">{hint}</span></>;
+-        const cls = "flex flex-col gap-3 p-5 text-left hover:bg-accent/50 no-underline text-inherit";
+-        return to ? <Link key={label} to={to} className={cls}>{inner}</Link> : <button key={label} className={cls} onClick={() => selectTasks(view!)}>{inner}</button>;
+-      })}
+-    </Card>
+-    <Tabs value={tab} onValueChange={setTab}>
+-      <TabsList aria-label="Paperclip Klar Ansichten"><TabsTrigger value="overview">Aufgaben</TabsTrigger><TabsTrigger value="team">KI-Team</TabsTrigger><TabsTrigger value="help">Einfach erklärt</TabsTrigger></TabsList>
+-      <TabsContent value="overview" className="space-y-4">
+-        {directory.isError && <p className="text-sm text-muted-foreground">Personennamen konnten nicht geladen werden. Zugewiesene Personen bleiben als solche gekennzeichnet.</p>}
+-        <WorkOverview key={taskView} initialView={taskView} companyId={companyId} agents={agents.isError ? undefined : agents.data} agentsError={agents.error} userProfiles={profiles} onNewTask={() => openNewIssue({ language: "de" })} />
+-      </TabsContent>
+-      <TabsContent value="team" className="space-y-4">
+-        <p className="text-base text-muted-foreground">„Bereit“ bedeutet: gerade kein Arbeitslauf. Die zugeteilte Aufgabe kann trotzdem als „in Arbeit“ eingetragen sein.</p>
+-        {agents.isPending && <p role="status">Das Team wird geladen…</p>}
+-        {agents.isError && <p role="alert" className="text-destructive">Das Team konnte nicht geladen werden. Bitte die Übersicht aktualisieren.</p>}
+-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">{team.map(agent => <Link key={agent.id} to={`/agents/${agent.id}`} className="no-underline text-inherit"><Card className="h-full p-5 gap-3 hover:bg-accent/50"><div className="flex flex-wrap justify-between gap-2"><h2 className="text-base font-semibold">{agent.name}</h2><span className={agent.status === "error" ? "text-sm text-destructive" : "text-sm text-muted-foreground"}>{agentLabels[agent.status] ?? "Status unbekannt"}</span></div><p className="text-base text-muted-foreground">{agent.title || "Rolle nicht hinterlegt"}</p><span className="text-sm underline">Aufgaben, Verlauf und Skills öffnen</span></Card></Link>)}</div>
+-        {!agents.isPending && !agents.isError && team.length === 0 && <p>Für diese Firma sind keine Assistenten vorhanden.</p>}
+-      </TabsContent>
+-      <TabsContent value="help" className="space-y-4">
+-        <Card className="p-5 space-y-3"><h2 className="text-lg font-semibold">Vom Auftrag zum Ergebnis</h2><p>Öffne eine Aufgabe: Dort findest du aktuelle Kommentare, hinterlegte Ergebnisse und die nächsten Schritte. Änderungen erfolgen in der ursprünglichen Aufgabe und bleiben für alle sichtbar.</p><p>„Blockiert“ bedeutet, dass ein Hindernis vorliegt. Es bedeutet nicht automatisch, dass du selbst handeln musst.</p><p>„Erledigt gemeldet“ ist der Status in Paperclip. Ob das Ziel erreicht wurde, zeigen Ergebnisbeleg und Abnahme.</p></Card>
+-        <div className="flex flex-wrap gap-4"><Button asChild variant="outline"><Link to="/skills">Gemeinsame Skills öffnen</Link></Button><Button asChild variant="outline"><Link to="/approvals">Freigaben prüfen</Link></Button><Button asChild variant="outline"><Link to="/artifacts">Ergebnisse öffnen</Link></Button></div>
+-      </TabsContent>
+-    </Tabs>
++  const { companies, setSelectedCompanyId } = useCompany();
++  const navigate = useNavigate();
++  const [newTaskOpen, setNewTaskOpen] = useState(false);
++  const [newTaskDraft, setNewTaskDraft] = useState("");
++  const [botId, setBotId] = useState<string | null>(null);
++  const [drafts, setDrafts] = useState<Record<string, ChatDraft>>({});
++  const [pending, setPending] = useState(false);
++  const [unassignedOpen, setUnassignedOpen] = useState(false);
++  const agents = useQuery({ queryKey: queryKeys.agents.list(companyId), queryFn: () => agentsApi.list(companyId), refetchInterval: 15_000 });
++  const approvals = useQuery({ queryKey: queryKeys.approvals.list(companyId), queryFn: () => approvalsApi.list(companyId), refetchInterval: 15_000 });
++  const attention = useQuery({ queryKey: [...queryKeys.attention(companyId), "klar-all-pending"], queryFn: () => attentionApi.list(companyId, { all: true, includeDismissed: true }), refetchInterval: 15_000 });
++  const runs = useQuery({ queryKey: [...queryKeys.liveRuns(companyId), "klar"], queryFn: () => heartbeatsApi.liveRunsForCompany(companyId), refetchInterval: 10_000 });
++  const work = useQuery({ queryKey: [...queryKeys.issues.list(companyId), "klar-active-summary"], queryFn: () => issuesApi.listCompact(companyId, { status: "todo,in_progress,blocked,in_review", limit: 200, offset: 0, sortField: "updated", sortDir: "desc" }), refetchInterval: 30_000 });
++  const session = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
++  const team = (agents.data ?? []).filter(agent => agent.companyId === companyId);
++  const pendingApprovals = (approvals.data ?? []).filter(approval => approval.companyId === companyId && needsApproval(approval));
++  const decisions = (attention.data?.items ?? []).filter(item => item.companyId === companyId && ["issue_thread_interaction", "decision", "join_request", "recovery_action", "review"].includes(item.sourceKind) && !["accepted", "approved", "rejected", "cancelled", "expired", "resolved"].includes(item.subject.status ?? ""));
++  const approvalCount = (id: string) => pendingApprovals.filter(item => item.requestedByAgentId === id).length + decisions.filter(item => decisionAgentId(item) === id).length;
++  const liveRuns = runs.data ?? [];
++  const sorted = [...team].sort((a, b) => botRank(a, approvalCount(a.id), liveRuns) - botRank(b, approvalCount(b.id), liveRuns) || a.name.localeCompare(b.name, "de"));
++  const selected = team.find(agent => agent.id === botId);
++  const agentMap = useMemo(() => new Map(team.map(agent => [agent.id, agent])), [agents.data, companyId]);
++  const unmatchedApprovals = pendingApprovals.filter(item => !item.requestedByAgentId || !agentMap.has(item.requestedByAgentId));
++  const unmatchedDecisions = decisions.filter(item => !agentMap.has(decisionAgentId(item) ?? ""));
++  const dirty = Boolean(newTaskDraft.trim()) || Object.values(drafts).some(draft => Boolean(draft.text.trim() || draft.files?.length));
++  const busy = agents.isFetching || approvals.isFetching || attention.isFetching || runs.isFetching;
++  function refresh() { void agents.refetch(); void approvals.refetch(); void attention.refetch(); void runs.refetch(); void work.refetch(); }
++  const canLeave = () => !pending && (!dirty || window.confirm("Du hast noch ungesendete Nachrichten. Möchtest du diese Ansicht trotzdem verlassen?"));
++  function changeCompany(id: string) {
++    const company = companies.find(item => item.id === id);
++    if (!company || id === companyId || !canLeave()) return;
++    setSelectedCompanyId(company.id); navigate(`/${encodeURIComponent(company.issuePrefix)}/klar`);
++  }
++  useEffect(() => {
++    if (!dirty && !pending) return;
++    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
++    window.addEventListener("beforeunload", warn);
++    return () => window.removeEventListener("beforeunload", warn);
++  }, [dirty, pending]);
++  return <div className="klar-chat-app">
++    <aside className="klar-chat-rail">
++      <button type="button" className="klar-logo" onClick={() => { if (!pending) setBotId(null); }} aria-label="Paperclip Klar – Bot-Übersicht"><span className="klar-logo-mark">k</span><span>paperclip <strong>klar</strong></span></button>
++      <nav aria-label="Hauptnavigation" className="flex flex-col gap-1">
++        <Button variant="ghost" disabled={pending} onClick={() => setBotId(null)} className="justify-start"><MessageCircle className="size-5" />Bot-Chats</Button>
++        <Button variant="ghost" asChild className="justify-start"><Link to="/inbox" onClick={event => { if (!canLeave()) event.preventDefault(); }}><Inbox className="size-5" />Posteingang</Link></Button>
++        <Button variant="ghost" asChild className="justify-start"><Link to="/dashboard" onClick={event => { if (!canLeave()) event.preventDefault(); }}><LayoutDashboard className="size-5" />Armaturenbrett</Link></Button>
++        <Button variant="ghost" disabled={pending} onClick={() => setNewTaskOpen(true)} className="justify-start"><SquarePen className="size-5" />Neue Aufgabe</Button>
++      </nav>
++    </aside>
++    <div className="klar-chat-main">
++      <header className="klar-app-header"><select aria-label="Arbeitsbereich wechseln" value={companyId} onChange={event => changeCompany(event.target.value)} disabled={pending}>{companies.map(company => <option key={company.id} value={company.id}>{company.name}</option>)}</select><div className="flex gap-1"><Button variant="ghost" size="icon" disabled={busy} onClick={refresh} aria-label="Daten aktualisieren"><RefreshCw className={busy ? "size-4 animate-spin" : "size-4"} /></Button><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="Menü"><Menu className="size-5" /></Button></DropdownMenuTrigger><DropdownMenuContent className="klar-theme" align="end">
++        <DropdownMenuItem disabled={pending} onSelect={() => setBotId(null)}><MessageCircle className="size-4" />Bot-Chats</DropdownMenuItem>
++        <DropdownMenuItem asChild><Link to="/inbox" onClick={event => { if (!canLeave()) event.preventDefault(); }}><Inbox className="size-4" />Posteingang</Link></DropdownMenuItem>
++        <DropdownMenuItem asChild><Link to="/dashboard" onClick={event => { if (!canLeave()) event.preventDefault(); }}><LayoutDashboard className="size-4" />Armaturenbrett</Link></DropdownMenuItem>
++        <DropdownMenuItem disabled={pending} onSelect={() => setNewTaskOpen(true)}><SquarePen className="size-4" />Neue Aufgabe</DropdownMenuItem>
++        <DropdownMenuSeparator />
++        <DropdownMenuItem asChild><Link to="/agents/new" onClick={event => { if (!canLeave()) event.preventDefault(); }}><Plus className="size-4" />Bot hinzufügen</Link></DropdownMenuItem>
++        <DropdownMenuItem asChild><Link to="/company/settings/instance/profile" onClick={event => { if (!canLeave()) event.preventDefault(); }}>Mein Konto</Link></DropdownMenuItem>
++      </DropdownMenuContent></DropdownMenu></div></header>
++      {(approvals.isError || attention.isError || runs.isError || agents.isError) && <p role="alert" className="klar-data-error">Ein Teil der Live-Daten konnte nicht aktualisiert werden. Status und Freigaben können unvollständig sein. <button className="underline" onClick={refresh}>Erneut laden</button></p>}
++      {selected ? <KlarBotChat key={selected.id} companyId={companyId} agent={selected} agents={team} approvals={pendingApprovals.filter(item => item.requestedByAgentId === selected.id)} decisions={decisions.filter(item => decisionAgentId(item) === selected.id)} currentUserId={session.data?.user.id} draft={drafts[selected.id] ?? { text: "", replyTo: null, files: [] }} onDraftChange={draft => setDrafts(current => ({ ...current, [selected.id]: draft }))} onBack={() => setBotId(null)} onResolved={refresh} onPendingChange={setPending} /> : <section className="klar-bot-overview">
++        <h1 className="sr-only">Bot-Chats</h1>
++        {unmatchedApprovals.length + unmatchedDecisions.length > 0 && <div className="klar-unassigned"><Button variant="ghost" onClick={() => setUnassignedOpen(value => !value)} aria-expanded={unassignedOpen}><ShieldCheck className="size-4" />{unmatchedApprovals.length + unmatchedDecisions.length} offene Entscheidungen ohne Bot-Zuordnung</Button>{unassignedOpen && <div className="space-y-3">{unmatchedApprovals.map(item => <KlarApproval key={item.id} approval={item} onResolved={refresh} />)}{unmatchedDecisions.map(item => <KlarAttention key={item.id} item={item} agentMap={agentMap} currentUserId={session.data?.user.id} onResolved={refresh} />)}</div>}</div>}
++        {agents.isPending && <p role="status">Deine Bots werden geladen…</p>}
++        <div className="klar-bot-list">{sorted.map(agent => {
++          const count = approvalCount(agent.id);
++          const rank = botRank(agent, count, liveRuns);
++          const run = liveRuns.find(item => item.agentId === agent.id && isRunning(item));
++          const currentTask = work.data?.find(task => task.companyId === companyId && task.assigneeAgentId === agent.id);
++          const label = count ? `${count} ${count === 1 ? "Freigabe" : "Freigaben"} offen` : currentTask && rank === 3 ? "Aufgabe wartet" : botLabels[run ? "running" : agent.status] ?? "Status unbekannt";
++          return <button key={agent.id} className="klar-bot-row" data-bot-rank={rank} type="button" onClick={() => setBotId(agent.id)} aria-label={`Chat mit ${agent.name} öffnen – ${label}`}><span className="klar-avatar">{agent.name.slice(0, 2).toUpperCase()}<span className="klar-status-dot" /></span><span className="klar-bot-row-content"><span className="klar-bot-row-title"><strong>{agent.name}</strong><span className={rank === 0 ? "klar-approval-badge" : "klar-bot-state"}>{rank === 0 && <ShieldCheck className="size-3" />}{label}</span></span><span className="klar-bot-preview">{run?.currentStatusMessage || run?.nextAction || currentTask?.title || agent.title || "Chat öffnen"}</span>{drafts[agent.id]?.text && <span className="text-xs text-muted-foreground">Ungesendete Nachricht</span>}</span><ChevronRight className="size-4 shrink-0 text-muted-foreground" /></button>;
++        })}</div>
++        {!agents.isPending && !agents.isError && team.length === 0 && <div className="klar-empty-chat"><Bot className="size-8" /><p>Dein erster Bot wartet auf seinen Einsatz.</p>{!team.length && <Button asChild><Link to="/agents/new"><Plus className="size-4" />Bot hinzufügen</Link></Button>}</div>}
++      </section>}
++    </div>
++    <KlarNewTask companyId={companyId} agents={team} ready={agents.isSuccess && !agents.isError} open={newTaskOpen} onOpenChange={setNewTaskOpen} draft={newTaskDraft} onDraftChange={setNewTaskDraft} onCreated={refresh} />
+   </div>;
+ }
+diff --git a/ui/storybook/stories/klar-workspace.stories.tsx b/ui/storybook/stories/klar-workspace.stories.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..3cb005393aaf1af03c1c1e4108f069b81f6ca11d
+--- /dev/null
++++ b/ui/storybook/stories/klar-workspace.stories.tsx
+@@ -0,0 +1,96 @@
++import { useEffect, useState } from "react";
++import { useQueryClient } from "@tanstack/react-query";
++import type { Meta, StoryObj } from "@storybook/react-vite";
++import { PaperclipKlar } from "@/pages/PaperclipKlar";
++import { useCompany } from "@/context/CompanyContext";
++import { storybookAgents, storybookApprovals, storybookIssues, storybookCompanies } from "../fixtures/paperclipData";
++import { queryKeys } from "@/lib/queryKeys";
++
++const meta: Meta = { title: "Product/Paperclip Klar", parameters: { layout: "fullscreen" } };
++export default meta;
++type Story = StoryObj;
++
++function KlarPreview() {
++  const { selectedCompanyId, setSelectedCompanyId } = useCompany();
++  const client = useQueryClient();
++  const [ready, setReady] = useState(false);
++  useEffect(() => {
++    setSelectedCompanyId("company-storybook");
++    const companyId = "company-storybook";
++    const demoCompanies = storybookCompanies.map(company => ({ ...company, name: company.id === companyId ? "Mein Team" : company.name }));
++    client.setQueriesData({ queryKey: ["companies", "list"] }, () => ({ companies: demoCompanies, unauthorized: false }));
++    const time = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
++    const demoAgents = [
++      { ...storybookAgents[0], id: "klar-nora", name: "Nora", title: "Entwicklung & Design", status: "running", capabilities: "Entwickelt und verbessert deine Webseite." },
++      { ...storybookAgents[0], id: "klar-atlas", name: "Atlas", title: "Recherche & Wissen", status: "running" },
++      { ...storybookAgents[1], id: "klar-lina", name: "Lina", title: "Qualität & Sicherheit", status: "error" },
++      { ...storybookAgents[2], id: "klar-echo", name: "Echo", title: "Deine Assistenz", role: "ceo", status: "idle" },
++    ];
++    let demoTasks = [
++      { ...storybookIssues[0], id: "klar-task-1", identifier: "DEMO-1", companyId, assigneeAgentId: "klar-nora", title: "Mach die Kontaktseite einfacher", description: "Die Kontaktseite soll auf dem Handy übersichtlich sein. Ein kurzer Text und eine klare Möglichkeit zur Kontaktaufnahme reichen.", status: "in_review", createdAt: time(45), updatedAt: time(4) },
++      { ...storybookIssues[0], id: "klar-task-2", identifier: "DEMO-2", companyId, assigneeAgentId: "klar-atlas", title: "Vergleiche die drei Angebote", description: "Fasse Preise und Unterschiede verständlich zusammen.", status: "in_progress", createdAt: time(12), updatedAt: time(2) },
++    ];
++    let demoApprovals = [{ ...storybookApprovals[0], id: "klar-approval-1", companyId, requestedByAgentId: "klar-nora", type: "request_board_approval", status: "pending", payload: { title: "Die neue Kontaktseite veröffentlichen?", summary: "Die mobile Ansicht ist in dieser Vorschau fertig. Bitte schau dir den Entwurf an.", recommendedAction: "Die überarbeitete Kontaktseite veröffentlichen.", nextActionOnApproval: "Nora übernimmt die freigegebene Version.", risks: ["Bestehende Inhalte werden durch die neue Version ersetzt."] } }];
++    let demoComments = [{ id: "klar-comment-1", companyId, issueId: "klar-task-1", authorAgentId: "klar-nora" as string | null, authorUserId: null as string | null, authorType: "agent", body: "Ich habe das Formular gekürzt und den Kontaktknopf grösser gemacht.\n\nSchau dir den Entwurf an. Wenn du etwas anders möchtest, antworte einfach hier.", createdAt: time(5), updatedAt: time(5), presentation: null, metadata: null }];
++    const demoAttachments: { id: string; companyId: string; issueId: string; originalFilename: string; contentType: string; byteSize: number; contentPath: string }[] = [];
++    const original = window.fetch;
++    window.fetch = async (input, init) => {
++      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
++      const path = url.pathname;
++      if (path === "/api/companies") return Response.json(demoCompanies);
++      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
++      const body = init?.body && typeof init.body === "string" ? JSON.parse(init.body) : {};
++      if (path === `/api/companies/${companyId}/agents`) return Response.json(demoAgents);
++      if (path === `/api/companies/${companyId}/approvals`) return Response.json(demoApprovals);
++      if (path === `/api/companies/${companyId}/attention`) return Response.json({ companyId, generatedAt: time(0), items: [], totalCount: 0, nextCursor: null, countsBySourceKind: {}, deskBadgeCount: 0 });
++      if (path === `/api/companies/${companyId}/live-runs`) return Response.json([
++        { id: "klar-run-1", agentId: "klar-nora", agentName: "Nora", status: "running", finishedAt: null, currentStatusMessage: "Kontaktseite ist bereit für deine Freigabe." },
++        { id: "klar-run-2", agentId: "klar-atlas", agentName: "Atlas", status: "running", finishedAt: null, currentStatusMessage: "Vergleicht gerade Preise und Leistungen." },
++      ]);
++      if (path === `/api/companies/${companyId}/issues`) {
++        if (method === "POST") {
++          const task = { ...storybookIssues[0], ...body, id: `klar-task-${demoTasks.length + 1}`, identifier: `DEMO-${demoTasks.length + 1}`, companyId, assigneeAgentId: body.assigneeAgentId ?? null, createdAt: time(0), updatedAt: time(0) };
++          demoTasks.push(task); return Response.json(task);
++        }
++        const owner = url.searchParams.get("assigneeAgentId");
++        const list = demoTasks.filter(task => !owner || task.assigneeAgentId === owner);
++        const offset = Number(url.searchParams.get("offset") ?? 0);
++        return Response.json(list.slice(offset, offset + Number(url.searchParams.get("limit") ?? 12)));
++      }
++      const taskMatch = path.match(/^\/api\/issues\/(klar-task-\d+)(?:\/(comments|interactions|attachments))?$/);
++      if (taskMatch) {
++        const [, id, kind] = taskMatch;
++        if (kind === "comments") {
++          if (method === "POST") {
++            const comment = { ...demoComments[0], id: `klar-comment-${demoComments.length + 1}`, issueId: id, authorAgentId: null, authorUserId: "user-board", authorType: "user", body: body.body, createdAt: time(0), updatedAt: time(0) };
++            demoComments.push(comment as typeof demoComments[number]); return Response.json(comment);
++          }
++          return Response.json(demoComments.filter(comment => comment.issueId === id));
++        }
++        if (kind === "attachments") return Response.json(demoAttachments.filter(file => file.issueId === id));
++        if (kind) return Response.json([]);
++        if (method === "PATCH") demoTasks = demoTasks.map(task => task.id === id ? { ...task, ...body } : task);
++        return Response.json(demoTasks.find(task => task.id === id));
++      }
++      if (path.match(/^\/api\/approvals\/klar-approval-1\/(approve|reject)$/)) {
++        demoApprovals = demoApprovals.map(approval => ({ ...approval, status: path.endsWith("approve") ? "approved" : "rejected" }));
++        return Response.json(demoApprovals[0]);
++      }
++      if (path.startsWith(`/api/companies/${companyId}/issues/klar-task-`) && method === "POST") {
++        const file = (init?.body as FormData).get("file") as File;
++        const attachment = { id: `klar-file-${demoAttachments.length + 1}`, companyId, issueId: path.split("/").at(-2)!, originalFilename: file.name, contentType: file.type, byteSize: file.size, contentPath: URL.createObjectURL(file) };
++        demoAttachments.push(attachment); return Response.json(attachment);
++      }
++      // This story is an isolated simulator, never a route to a production write.
++      if (method !== "GET" && path.startsWith("/api/")) return Response.json({ error: "Diese Aktion gehört nicht zur Designvorschau." }, { status: 403 });
++      return original(input, init);
++    };
++    for (const queryKey of [queryKeys.agents.list(companyId), queryKeys.approvals.list(companyId), queryKeys.attention(companyId), queryKeys.liveRuns(companyId), queryKeys.issues.list(companyId)]) client.removeQueries({ queryKey });
++    setReady(true);
++    return () => { window.fetch = original; demoAttachments.forEach(file => URL.revokeObjectURL(file.contentPath)); };
++  }, [setSelectedCompanyId, client]);
++  if (!ready || selectedCompanyId !== "company-storybook") return <p>Designvorschau wird geladen…</p>;
++  return <div className="klar-theme klar-preview"><p className="klar-preview-note">Vorschau · Beispieldaten</p><PaperclipKlar /></div>;
++}
++export const GuidedWorkspace: Story = { render: () => <KlarPreview /> };
++export const BotChats: Story = { render: () => <KlarPreview /> };

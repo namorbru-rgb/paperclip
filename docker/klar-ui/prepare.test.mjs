@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { applyFeature, git, prepare, stamp, verifyPackage } from './prepare.mjs';
+import { applyFeature, applyLocale, applyRedesign, git, prepare, stamp, verifyPackage } from './prepare.mjs';
 
 function fixture(t) {
   const cwd = mkdtempSync(join(tmpdir(), 'klar-source-test-'));
@@ -71,4 +72,51 @@ test('binds the package to committed file contents and rejects false labels', t 
   assert.throws(() => verifyPackage(cwd, definition.releaseCommit, packageDirectory), /file list/);
   writeFileSync(join(packageDirectory, 'prepare.mjs'), 'unreviewed change\n');
   assert.throws(() => verifyPackage(cwd, revision, packageDirectory), /content differs/);
+});
+
+test('locale overlay preserves the server and rejects wrong bases, tampering and non-UI scope', t => {
+  const { cwd, definition } = fixture(t);
+  applyFeature(cwd, definition);
+  const baseTree = git(cwd, ['write-tree']);
+  writeFileSync(join(cwd, 'ui/src/view.txt'), 'existing UI\nKlar\nNeuer Auftrag\n');
+  git(cwd, ['add', 'ui/src/view.txt']);
+  const resultTree = git(cwd, ['write-tree']);
+  const patch = git(cwd, ['diff', '--cached', baseTree], undefined, false);
+  const patchPath = join(cwd, 'locale.patch');
+  writeFileSync(patchPath, patch);
+  git(cwd, ['read-tree', baseTree]);
+  writeFileSync(join(cwd, 'ui/src/view.txt'), 'existing UI\nKlar\n');
+  git(cwd, ['add', 'ui/src/view.txt']);
+  const locale = { baseTree, resultTree, sha256: createHash('sha256').update(patch).digest('hex'), paths: ['ui/src/view.txt'] };
+  assert.throws(() => applyLocale(cwd, { ...locale, baseTree: resultTree }, patchPath), /Unexpected UI source before/);
+  assert.throws(() => applyLocale(cwd, { ...locale, sha256: '0'.repeat(64) }, patchPath), /hash differs/);
+  assert.throws(() => applyLocale(cwd, { ...locale, paths: ['server.txt'] }, patchPath), /reviewed scope/);
+  const unsafePatch = patch.replaceAll('ui/src/view.txt', 'server.txt');
+  writeFileSync(patchPath, unsafePatch);
+  assert.throws(() => applyLocale(cwd, { ...locale, sha256: createHash('sha256').update(unsafePatch).digest('hex'), paths: ['server.txt'] }, patchPath), /only change UI source/);
+  writeFileSync(patchPath, patch);
+  applyLocale(cwd, locale, patchPath);
+  assert.equal(git(cwd, ['write-tree']), resultTree);
+  assert.equal(readFileSync(join(cwd, 'server.txt'), 'utf8'), 'new production server\n');
+});
+
+test('redesign accepts only the reviewed UI/story paths and preserves the server', t => {
+  const { cwd, definition } = fixture(t);
+  applyFeature(cwd, definition);
+  const baseTree = git(cwd, ['write-tree']);
+  mkdirSync(join(cwd, 'ui/storybook/stories'), { recursive: true });
+  writeFileSync(join(cwd, 'ui/src/view.txt'), 'Guided task input\n');
+  writeFileSync(join(cwd, 'ui/storybook/stories/klar.stories.tsx'), 'export const Preview = {};\n');
+  git(cwd, ['add', 'ui']);
+  const resultTree = git(cwd, ['write-tree']);
+  const patch = git(cwd, ['diff', '--cached', baseTree], undefined, false);
+  const patchPath = join(cwd, 'redesign.patch');
+  writeFileSync(patchPath, patch);
+  git(cwd, ['restore', '--source', baseTree, '--staged', '--worktree', '--', 'ui']);
+  const design = { baseTree, resultTree, sha256: createHash('sha256').update(patch).digest('hex'), paths: ['ui/src/view.txt', 'ui/storybook/stories/klar.stories.tsx'] };
+  assert.throws(() => applyLocale(cwd, design, patchPath), /only change UI source/);
+  assert.throws(() => applyRedesign(cwd, { ...design, paths: ['server.txt'] }, patchPath), /reviewed scope/);
+  applyRedesign(cwd, design, patchPath);
+  assert.equal(git(cwd, ['write-tree']), resultTree);
+  assert.equal(readFileSync(join(cwd, 'server.txt'), 'utf8'), 'new production server\n');
 });

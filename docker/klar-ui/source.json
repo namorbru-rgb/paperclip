@@ -3,6 +3,20 @@
   "releaseCommit": "65ec059bde30d98c92165b24a30a540800dd1f6f",
   "featureBase": "1acbe43fae8a8b6b570e57ab582dce69edbe43ed",
   "featureCommit": "810bc67de274ac7fc3bb61388ab2295f4b64f0cf",
+  "localePatch": {
+    "baseTree": "ac984a3e1a16b571aa2082ad37a9dcf1eb583f0c",
+    "resultTree": "89ad4ba19a6aa4d440842c09634604405d95105a",
+    "sha256": "2bcbba3f106b2b0d3985bec978eb8847a6d4e5c3532deb1f5f915073acaf746d",
+    "paths": [
+      "ui/src/components/NewIssueDialog.test.tsx",
+      "ui/src/components/NewIssueDialog.tsx",
+      "ui/src/components/ReusableExecutionWorkspaceSelect.tsx",
+      "ui/src/context/DialogContext.tsx",
+      "ui/src/lib/new-issue-copy.ts",
+      "ui/src/lib/new-issue-de.json",
+      "ui/src/pages/PaperclipKlar.tsx"
+    ]
+  },
   "paths": [
     "doc/plans/2026-09-08-operational-dashboard.md",
     "ui/src/App.tsx",
@@ -12,5 +26,33 @@
     "ui/src/lib/company-routes.test.ts",
     "ui/src/lib/company-routes.ts",
     "ui/src/pages/PaperclipKlar.tsx"
-  ]
+  ],
+  "redesignPatch": {
+    "sha256": "e10d0cd483c26007d99817e6560d525d3fca3690cf80b4f91f7c54553ad3a3e5",
+    "baseTree": "89ad4ba19a6aa4d440842c09634604405d95105a",
+    "paths": [
+      "ui/src/components/KlarAttachments.tsx",
+      "ui/src/components/KlarBotChat.test.tsx",
+      "ui/src/components/KlarBotChat.tsx",
+      "ui/src/components/KlarComposer.test.tsx",
+      "ui/src/components/KlarComposer.tsx",
+      "ui/src/components/KlarDecision.tsx",
+      "ui/src/components/KlarFilePreview.tsx",
+      "ui/src/components/KlarNewTask.test.tsx",
+      "ui/src/components/KlarNewTask.tsx",
+      "ui/src/components/Layout.test.tsx",
+      "ui/src/components/Layout.tsx",
+      "ui/src/components/WorkOverview.tsx",
+      "ui/src/components/onboarding/PillGuy.tsx",
+      "ui/src/components/useKlarVoice.test.tsx",
+      "ui/src/components/useKlarVoice.ts",
+      "ui/src/index.css",
+      "ui/src/lib/klar-chat.test.ts",
+      "ui/src/lib/klar-chat.ts",
+      "ui/src/lib/klar-send.ts",
+      "ui/src/pages/PaperclipKlar.tsx",
+      "ui/storybook/stories/klar-workspace.stories.tsx"
+    ],
+    "resultTree": "02e2622605de9aa315d1a57d8bc38a8b12e21c7c"
+  }
 }
