@@ -26,6 +26,9 @@ UI-only release has no database migration.
 
 After deployment, compare `paperclip-ui-build.json` with the approved packaging,
 feature and release commits. Verify its `indexSha256` against the served HTML.
+The build fetches the claimed packaging commit and requires every packaging
+file to match that commit byte for byte. The manifest also records each file's
+SHA-256 digest; a supplied revision alone is not accepted as proof.
 The server health commit must remain the existing runtime commit; a UI release
 must not mislabel it. Then test the company-prefixed Klar page with a real board
 session, live tasks, filters, search, pagination, refresh, expired sessions,

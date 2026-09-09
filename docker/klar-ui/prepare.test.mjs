@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { applyFeature, git, prepare, stamp } from './prepare.mjs';
+import { applyFeature, git, prepare, stamp, verifyPackage } from './prepare.mjs';
 
 function fixture(t) {
   const cwd = mkdtempSync(join(tmpdir(), 'klar-source-test-'));
@@ -57,4 +57,18 @@ test('cannot label a UI build with a branch or an absent revision', t => {
   const { cwd } = fixture(t);
   assert.throws(() => stamp(cwd, 'master'), /exact Git commit/);
   assert.throws(() => stamp(cwd, ''), /exact Git commit/);
+});
+
+test('binds the package to committed file contents and rejects false labels', t => {
+  const { cwd, definition } = fixture(t);
+  const packageDirectory = join(cwd, 'docker/klar-ui');
+  mkdirSync(packageDirectory, { recursive: true });
+  writeFileSync(join(packageDirectory, 'prepare.mjs'), 'reviewed package\n');
+  git(cwd, ['add', 'docker/klar-ui']);
+  git(cwd, ['commit', '--quiet', '-m', 'package fixture']);
+  const revision = git(cwd, ['rev-parse', 'HEAD']);
+  assert.match(verifyPackage(cwd, revision, packageDirectory)['prepare.mjs'], /^[a-f0-9]{64}$/);
+  assert.throws(() => verifyPackage(cwd, definition.releaseCommit, packageDirectory), /file list/);
+  writeFileSync(join(packageDirectory, 'prepare.mjs'), 'unreviewed change\n');
+  assert.throws(() => verifyPackage(cwd, revision, packageDirectory), /content differs/);
 });

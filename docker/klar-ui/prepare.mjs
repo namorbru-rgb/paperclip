@@ -42,14 +42,32 @@ export function prepare(cwd) {
   return applyFeature(cwd);
 }
 
+export function verifyPackage(cwd, revision, packageDirectory = here) {
+  assert.match(revision, /^[a-f0-9]{40}$/, 'Package revision must be an exact Git commit');
+  const files = readdirSync(packageDirectory).sort();
+  const committed = git(cwd, ['ls-tree', '-r', '--name-only', revision, '--', 'docker/klar-ui/']).split('\n');
+  assert.deepEqual(committed.sort(), files.map(file => `docker/klar-ui/${file}`), 'Package file list does not match its Git revision');
+  const hashes = {};
+  for (const file of files) {
+    const actual = readFileSync(join(packageDirectory, file), 'utf8');
+    const expected = git(cwd, ['show', `${revision}:docker/klar-ui/${file}`], undefined, false);
+    assert.equal(actual, expected, `Package content differs from its Git revision: ${file}`);
+    hashes[file] = createHash('sha256').update(actual).digest('hex');
+  }
+  return hashes;
+}
+
 export function stamp(cwd, revision) {
   assert.match(revision, /^[a-f0-9]{40}$/, 'Package revision must be an exact Git commit');
   assert.equal(git(cwd, ['rev-parse', 'HEAD']), source.releaseCommit);
+  git(cwd, ['fetch', '--depth=1', 'origin', revision]);
+  const packageFilesSha256 = verifyPackage(cwd, revision);
   const dist = join(cwd, 'ui', 'dist');
   const index = readFileSync(join(dist, 'index.html'));
   const manifest = {
     schemaVersion: 1, feature: 'Paperclip Klar', packageCommit: revision,
     releaseCommit: source.releaseCommit, featureCommit: source.featureCommit,
+    packageFilesSha256,
     indexSha256: createHash('sha256').update(index).digest('hex'),
   };
   writeFileSync(join(dist, 'paperclip-ui-build.json'), `${JSON.stringify(manifest, null, 2)}\n`);
