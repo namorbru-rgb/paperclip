@@ -1,5 +1,15 @@
 # Klar translation crash
 
+Klar now keeps all pending approvals and decisions in a separate view opened
+from Menu > Freigaben. Assigned and unassigned requests remain available there.
+Chats no longer render pinned approval cards. Returning from the approval list
+restores the selected chat and its draft. Review and explicit approval controls
+remain in place.
+
+Routine task activity no longer creates toast popups while Klar is open. The
+same events still refresh live data. Error notifications and notifications on
+other Paperclip routes keep their existing behavior.
+
 A browser-translated bot status can lose the text node React owns. When the
 approval query then adds the shield icon before that text, React's insertBefore
 fails and the route error boundary replaces the page.
