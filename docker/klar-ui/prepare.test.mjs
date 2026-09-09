@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { applyFeature, applyLocale, git, prepare, stamp, verifyPackage } from './prepare.mjs';
+import { applyFeature, applyLocale, applyRedesign, git, prepare, stamp, verifyPackage } from './prepare.mjs';
 
 function fixture(t) {
   const cwd = mkdtempSync(join(tmpdir(), 'klar-source-test-'));
@@ -96,6 +96,27 @@ test('locale overlay preserves the server and rejects wrong bases, tampering and
   assert.throws(() => applyLocale(cwd, { ...locale, sha256: createHash('sha256').update(unsafePatch).digest('hex'), paths: ['server.txt'] }, patchPath), /only change UI source/);
   writeFileSync(patchPath, patch);
   applyLocale(cwd, locale, patchPath);
+  assert.equal(git(cwd, ['write-tree']), resultTree);
+  assert.equal(readFileSync(join(cwd, 'server.txt'), 'utf8'), 'new production server\n');
+});
+
+test('redesign accepts only the reviewed UI/story paths and preserves the server', t => {
+  const { cwd, definition } = fixture(t);
+  applyFeature(cwd, definition);
+  const baseTree = git(cwd, ['write-tree']);
+  mkdirSync(join(cwd, 'ui/storybook/stories'), { recursive: true });
+  writeFileSync(join(cwd, 'ui/src/view.txt'), 'Guided task input\n');
+  writeFileSync(join(cwd, 'ui/storybook/stories/klar.stories.tsx'), 'export const Preview = {};\n');
+  git(cwd, ['add', 'ui']);
+  const resultTree = git(cwd, ['write-tree']);
+  const patch = git(cwd, ['diff', '--cached', baseTree], undefined, false);
+  const patchPath = join(cwd, 'redesign.patch');
+  writeFileSync(patchPath, patch);
+  git(cwd, ['restore', '--source', baseTree, '--staged', '--worktree', '--', 'ui']);
+  const design = { baseTree, resultTree, sha256: createHash('sha256').update(patch).digest('hex'), paths: ['ui/src/view.txt', 'ui/storybook/stories/klar.stories.tsx'] };
+  assert.throws(() => applyLocale(cwd, design, patchPath), /only change UI source/);
+  assert.throws(() => applyRedesign(cwd, { ...design, paths: ['server.txt'] }, patchPath), /reviewed scope/);
+  applyRedesign(cwd, design, patchPath);
   assert.equal(git(cwd, ['write-tree']), resultTree);
   assert.equal(readFileSync(join(cwd, 'server.txt'), 'utf8'), 'new production server\n');
 });

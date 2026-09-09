@@ -26,5 +26,31 @@
     "ui/src/lib/company-routes.test.ts",
     "ui/src/lib/company-routes.ts",
     "ui/src/pages/PaperclipKlar.tsx"
-  ]
+  ],
+  "redesignPatch": {
+    "sha256": "dc4263251108c2ab0af441ee9f04fa9f8e68ffd729a2929e318eddb27e7a2e59",
+    "baseTree": "89ad4ba19a6aa4d440842c09634604405d95105a",
+    "paths": [
+      "ui/src/components/KlarAttachments.tsx",
+      "ui/src/components/KlarBotChat.test.tsx",
+      "ui/src/components/KlarBotChat.tsx",
+      "ui/src/components/KlarComposer.test.tsx",
+      "ui/src/components/KlarComposer.tsx",
+      "ui/src/components/KlarDecision.tsx",
+      "ui/src/components/KlarFilePreview.tsx",
+      "ui/src/components/Layout.test.tsx",
+      "ui/src/components/Layout.tsx",
+      "ui/src/components/WorkOverview.tsx",
+      "ui/src/components/onboarding/PillGuy.tsx",
+      "ui/src/components/useKlarVoice.test.tsx",
+      "ui/src/components/useKlarVoice.ts",
+      "ui/src/index.css",
+      "ui/src/lib/klar-chat.test.ts",
+      "ui/src/lib/klar-chat.ts",
+      "ui/src/lib/klar-send.ts",
+      "ui/src/pages/PaperclipKlar.tsx",
+      "ui/storybook/stories/klar-workspace.stories.tsx"
+    ],
+    "resultTree": "ab07334b294d527881cac6fd5e659fd4702a6971"
+  }
 }
