@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/namorbru-rgb/paperclip.git",
+  "releaseCommit": "65ec059bde30d98c92165b24a30a540800dd1f6f",
+  "featureBase": "1acbe43fae8a8b6b570e57ab582dce69edbe43ed",
+  "featureCommit": "810bc67de274ac7fc3bb61388ab2295f4b64f0cf",
+  "paths": [
+    "doc/plans/2026-09-08-operational-dashboard.md",
+    "ui/src/App.tsx",
+    "ui/src/components/Sidebar.tsx",
+    "ui/src/components/WorkOverview.test.tsx",
+    "ui/src/components/WorkOverview.tsx",
+    "ui/src/lib/company-routes.test.ts",
+    "ui/src/lib/company-routes.ts",
+    "ui/src/pages/PaperclipKlar.tsx"
+  ]
+}
