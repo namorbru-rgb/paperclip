@@ -44,8 +44,15 @@ base before it can unblock existing PR reviews. A PR branch alone does not
 change the trusted review runner. This document does not authorize bypassing a
 failed check, bypassing branch protection, or merging a feature before review.
 
-After configuration, rerun the failed review and inspect every step, including
-token creation, quality gates, and security gates. Verify the `security-review`
+After the configuration has been reviewed and established on `master`, trigger
+a fresh `synchronize` or `reopened` pull-request event. Do not rely on replaying
+a pre-configuration run: GitHub re-runs retain the original event's commit and
+ref, and that workflow did not pass the new app variables. See
+[GitHub's re-run documentation](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
+Once the run uses the configured workflow, ordinary failed-job retries are valid.
+
+Inspect every step, including token creation, quality gates, and security gates.
+Verify the `security-review`
 check belongs to the current PR head; inspect and resolve any draft advisory.
 The existing advisory-only security reporting behavior is not a substitute for
 release acceptance. Review approval and production acceptance remain separate.
