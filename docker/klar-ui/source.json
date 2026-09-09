@@ -28,7 +28,7 @@
     "ui/src/pages/PaperclipKlar.tsx"
   ],
   "redesignPatch": {
-    "sha256": "e10d0cd483c26007d99817e6560d525d3fca3690cf80b4f91f7c54553ad3a3e5",
+    "sha256": "b175188db652f4e941b96bc311f053518bf38e218d6898d163119704db070dd9",
     "baseTree": "89ad4ba19a6aa4d440842c09634604405d95105a",
     "paths": [
       "ui/src/components/KlarAttachments.tsx",
@@ -50,9 +50,10 @@
       "ui/src/lib/klar-chat.test.ts",
       "ui/src/lib/klar-chat.ts",
       "ui/src/lib/klar-send.ts",
+      "ui/src/pages/PaperclipKlar.test.tsx",
       "ui/src/pages/PaperclipKlar.tsx",
       "ui/storybook/stories/klar-workspace.stories.tsx"
     ],
-    "resultTree": "02e2622605de9aa315d1a57d8bc38a8b12e21c7c"
+    "resultTree": "02ed97ad44688beb79887a048d6f5cb00cfa8417"
   }
 }

@@ -11,7 +11,7 @@ ENV CI=true NODE_OPTIONS=--max-old-space-size=4096
 RUN corepack pnpm@9.15.4 install --filter '@paperclipai/ui...' --filter '@paperclipai/plugin-sdk...' --frozen-lockfile --ignore-scripts
 RUN corepack pnpm@9.15.4 -r --filter '@paperclipai/ui...' build
 RUN node scripts/check-token-gates.mjs && cd ui && node node_modules/typescript/bin/tsc -b --pretty false \
-    && node ../node_modules/vitest/vitest.mjs run src/components/KlarComposer.test.tsx src/components/KlarBotChat.test.tsx src/components/KlarNewTask.test.tsx src/components/useKlarVoice.test.tsx src/lib/klar-chat.test.ts src/components/Layout.test.tsx src/components/NewIssueDialog.test.tsx src/components/WorkOverview.test.tsx src/lib/company-routes.test.ts --pool=threads --maxWorkers=1
+    && node ../node_modules/vitest/vitest.mjs run src/pages/PaperclipKlar.test.tsx src/components/KlarComposer.test.tsx src/components/KlarBotChat.test.tsx src/components/KlarNewTask.test.tsx src/components/useKlarVoice.test.tsx src/lib/klar-chat.test.ts src/components/Layout.test.tsx src/components/NewIssueDialog.test.tsx src/components/WorkOverview.test.tsx src/lib/company-routes.test.ts --pool=threads --maxWorkers=1
 ARG PAPERCLIP_UI_BUILD_COMMIT
 RUN node /package/prepare.mjs stamp /build/source "$PAPERCLIP_UI_BUILD_COMMIT"
 
