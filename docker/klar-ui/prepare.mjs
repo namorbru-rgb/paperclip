@@ -39,7 +39,25 @@ export function prepare(cwd) {
   git(cwd, ['remote', 'add', 'origin', source.repository]);
   git(cwd, ['fetch', '--depth=1', 'origin', source.releaseCommit, source.featureBase, source.featureCommit]);
   git(cwd, ['checkout', '--detach', source.releaseCommit]);
-  return applyFeature(cwd);
+  const featureHash = applyFeature(cwd);
+  applyLocale(cwd);
+  return featureHash;
+}
+
+export function applyLocale(cwd, definition = source.localePatch, patchPath = join(here, 'german-dialog.patch')) {
+  assert.match(definition.baseTree, /^[a-f0-9]{40}$/);
+  assert.match(definition.resultTree, /^[a-f0-9]{40}$/);
+  assert.match(definition.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(git(cwd, ['write-tree']), definition.baseTree, 'Unexpected UI source before locale patch');
+  const patch = readFileSync(patchPath, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), definition.sha256, 'Locale patch hash differs');
+  const paths = git(cwd, ['apply', '--numstat'], patch).split('\n').map(line => line.split('\t')[2]);
+  assert.ok(paths.every(path => /^ui\/src\/[A-Za-z0-9_./-]+$/.test(path) && !path.split('/').includes('..')), 'Locale patch must only change UI source');
+  assert.deepEqual(paths.sort(), [...definition.paths].sort(), 'Locale patch paths differ from reviewed scope');
+  git(cwd, ['apply', '--check', '--index'], patch);
+  git(cwd, ['apply', '--index'], patch);
+  git(cwd, ['diff', '--cached', '--check']);
+  assert.equal(git(cwd, ['write-tree']), definition.resultTree, 'Unexpected UI source after locale patch');
 }
 
 export function verifyPackage(cwd, revision, packageDirectory = here) {
@@ -62,12 +80,15 @@ export function stamp(cwd, revision) {
   assert.equal(git(cwd, ['rev-parse', 'HEAD']), source.releaseCommit);
   git(cwd, ['fetch', '--depth=1', 'origin', revision]);
   const packageFilesSha256 = verifyPackage(cwd, revision);
+  assert.equal(git(cwd, ['write-tree']), source.localePatch.resultTree, 'Built source differs from reviewed UI tree');
   const dist = join(cwd, 'ui', 'dist');
   const index = readFileSync(join(dist, 'index.html'));
   const manifest = {
     schemaVersion: 1, feature: 'Paperclip Klar', packageCommit: revision,
     releaseCommit: source.releaseCommit, featureCommit: source.featureCommit,
     packageFilesSha256,
+    sourceTree: source.localePatch.resultTree,
+    localePatchSha256: source.localePatch.sha256,
     indexSha256: createHash('sha256').update(index).digest('hex'),
   };
   writeFileSync(join(dist, 'paperclip-ui-build.json'), `${JSON.stringify(manifest, null, 2)}\n`);

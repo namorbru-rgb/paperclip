@@ -1,0 +1,995 @@
+diff --git a/ui/src/components/NewIssueDialog.test.tsx b/ui/src/components/NewIssueDialog.test.tsx
+index fe68c3cf..01cb2558 100644
+--- a/ui/src/components/NewIssueDialog.test.tsx
++++ b/ui/src/components/NewIssueDialog.test.tsx
+@@ -381,6 +381,55 @@ describe("NewIssueDialog", () => {
+     document.body.innerHTML = "";
+   });
+ 
++  it("creates a German Klar task without translating content or API values", async () => {
++    dialogState.newIssueDefaults = {
++      language: "de",
++      title: "Review Project",
++      description: "Keep this English task content",
++      status: "todo",
++      projectId: "project-1",
++      workMode: "planning",
++    };
++    const { root } = renderDialog(container);
++    await flush();
++
++    expect(container.textContent).toContain("Neuer Auftrag");
++    expect(container.textContent).toContain("Zuständig");
++    expect(container.textContent).toContain("Offen");
++    expect(container.textContent).toContain("Hochladen");
++    expect(container.textContent).toContain("Planen");
++    expect(container.textContent).toContain("Entwurf verwerfen");
++    expect(container.textContent).not.toContain("Create Task");
++    expect(container.querySelector('textarea[placeholder="Auftragstitel"]')).not.toBeNull();
++    expect(container.querySelector('textarea[aria-label="Beschreibung hinzufügen …"]')).not.toBeNull();
++    const submit = Array.from(container.querySelectorAll("button"))
++      .find((button) => button.textContent === "Auftrag erstellen");
++    await waitForAssertion(() => expect(submit?.hasAttribute("disabled")).toBe(false));
++    await act(async () => { submit!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
++    await flush();
++    expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
++      title: "Review Project", description: "Keep this English task content",
++      status: "todo", workMode: "planning", projectId: "project-1",
++    }));
++    expect(mockIssuesApi.create.mock.calls[0][1]).not.toHaveProperty("language");
++    act(() => root.unmount());
++  });
++
++  it("keeps a failed German submission visible with a translated retry message", async () => {
++    dialogState.newIssueDefaults = { language: "de", title: "Auftrag behalten" };
++    mockIssuesApi.create.mockRejectedValue({});
++    const { root } = renderDialog(container);
++    await flush();
++    const submit = Array.from(container.querySelectorAll("button"))
++      .find((button) => button.textContent === "Auftrag erstellen");
++    await waitForAssertion(() => expect(submit?.hasAttribute("disabled")).toBe(false));
++    await act(async () => { submit!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
++    await waitForAssertion(() => expect(container.textContent).toContain("Auftrag konnte nicht erstellt werden"));
++    expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
++    expect((container.querySelector('textarea[placeholder="Auftragstitel"]') as HTMLTextAreaElement).value).toBe("Auftrag behalten");
++    act(() => root.unmount());
++  });
++
+   it("shows sub-issue context only when opened from a sub-issue action", async () => {
+     dialogState.newIssueDefaults = {
+       parentId: "issue-1",
+diff --git a/ui/src/components/NewIssueDialog.tsx b/ui/src/components/NewIssueDialog.tsx
+index a7e514a4..cbb82c7e 100644
+--- a/ui/src/components/NewIssueDialog.tsx
++++ b/ui/src/components/NewIssueDialog.tsx
+@@ -1,3 +1,4 @@
++import { useIssueDialogCopy } from "../lib/new-issue-copy";
+ import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type CSSProperties, type DragEvent, type RefObject } from "react";
+ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+ import type { AgentEnvConfig, EnvBinding, IssueWorkMode } from "@paperclipai/shared";
+@@ -378,6 +379,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
+   projectSelectorRef: RefObject<HTMLButtonElement | null>;
+   onChange: (value: string) => void;
+ }) {
++  const copy = useIssueDialogCopy();
+   const [draftValue, setDraftValue] = useState(value);
+ 
+   useEffect(() => {
+@@ -387,7 +389,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
+   return (
+     <textarea
+       className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
+-      placeholder="Task title"
++      placeholder={copy("Task title")}
+       rows={1}
+       value={draftValue}
+       onChange={(e) => {
+@@ -441,6 +443,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
+   imageUploadHandler: (file: File) => Promise<string>;
+   onChange: (value: string) => void;
+ }) {
++  const copy = useIssueDialogCopy();
+   const [draftValue, setDraftValue] = useState(value);
+ 
+   useEffect(() => {
+@@ -455,7 +458,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
+         setDraftValue(nextValue);
+         onChange(nextValue);
+       }}
+-      placeholder="Add description..."
++      placeholder={copy("Add description...")}
+       bordered={false}
+       mentions={mentions}
+       contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-(--sz-220px)" : "min-h-(--sz-120px)")}
+@@ -465,11 +468,12 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
+ });
+ 
+ export function NewIssueDialog() {
++  const copy = useIssueDialogCopy();
+   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
+   const visualViewportLayout = useVisualViewportLayout(newIssueOpen);
+   const dialogBodyRef = useRef<HTMLDivElement>(null);
+   const { companies, selectedCompanyId, selectedCompany } = useCompany();
+-  const workModeOptions = useMemo(() => workModeMetaList(), []);
++  const workModeOptions = useMemo(() => workModeMetaList().map((mode) => ({ ...mode, label: copy(mode.label) })), [copy]);
+   const statuses = useMemo(() => buildStatusOptions(), []);
+   const queryClient = useQueryClient();
+   const { pushToast } = useToastActions();
+@@ -671,11 +675,11 @@ export function NewIssueDialog() {
+         const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
+         const issueRef = issue.identifier ?? issue.id;
+         pushToast({
+-          title: `Created ${issueRef} with upload warnings`,
+-          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
++          title: newIssueDefaults.language === "de" ? `Auftrag ${issueRef} erstellt; einige Dateien fehlen` : `Created ${issueRef} with upload warnings`,
++          body: newIssueDefaults.language === "de" ? `${failures.length} Datei(en) konnten nicht hinzugefügt werden.` : `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
+           tone: "warn",
+           action: prefix
+-            ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
++            ? { label: newIssueDefaults.language === "de" ? `${issueRef} öffnen` : `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+             : undefined,
+         });
+       }
+@@ -687,7 +691,7 @@ export function NewIssueDialog() {
+ 
+   const uploadDescriptionImage = useMutation({
+     mutationFn: async (file: File) => {
+-      if (!effectiveCompanyId) throw new Error("No organization selected");
++      if (!effectiveCompanyId) throw new Error(copy("No organization selected"));
+       return assetsApi.uploadImage(effectiveCompanyId, file, "issues/drafts");
+     },
+   });
+@@ -1149,13 +1153,13 @@ export function NewIssueDialog() {
+   }
+ 
+   function handleFileDragEnter(evt: DragEvent<HTMLDivElement>) {
+-    if (!evt.dataTransfer.types.includes("Files")) return;
++    if (!evt.dataTransfer.types.includes(copy("Files"))) return;
+     evt.preventDefault();
+     setIsFileDragOver(true);
+   }
+ 
+   function handleFileDragOver(evt: DragEvent<HTMLDivElement>) {
+-    if (!evt.dataTransfer.types.includes("Files")) return;
++    if (!evt.dataTransfer.types.includes(copy("Files"))) return;
+     evt.preventDefault();
+     evt.dataTransfer.dropEffect = "copy";
+     setIsFileDragOver(true);
+@@ -1214,12 +1218,12 @@ export function NewIssueDialog() {
+     && !isUsingParentExecutionWorkspace;
+   const assigneeOptionsTitle =
+     assigneeAdapterType === "claude_local"
+-      ? "Claude options"
++      ? copy("Claude options")
+       : assigneeAdapterType === "codex_local"
+-        ? "Codex options"
++        ? copy("Codex options")
+         : assigneeAdapterType === "opencode_local"
+-          ? "OpenCode options"
+-        : "Agent options";
++          ? copy("OpenCode options")
++        : copy("Agent options");
+   const thinkingEffortOptions =
+     assigneeAdapterType === "codex_local"
+       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
+@@ -1273,7 +1277,7 @@ export function NewIssueDialog() {
+   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
+   const canDiscardDraft = hasDraft || hasSavedDraft;
+   const createIssueErrorMessage =
+-    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create task. Try again.";
++    createIssue.error instanceof Error ? createIssue.error.message : copy("Failed to create task. Try again.");
+   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
+   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
+ 
+@@ -1445,13 +1449,14 @@ export function NewIssueDialog() {
+               </PopoverContent>
+             </Popover>
+             <span className="text-muted-foreground/60">&rsaquo;</span>
+-            <span>{isSubIssueMode ? "New sub-task" : "New task"}</span>
++            <span>{isSubIssueMode ? copy("New sub-task") : copy("New task")}</span>
+           </div>
+           <div className="flex items-center gap-1">
+             <Button
+               variant="ghost"
+               size="icon-xs"
+               className="text-muted-foreground"
++              aria-label={copy(expanded ? "Shrink dialog" : "Expand dialog")}
+               onClick={() => setExpanded(!expanded)}
+               disabled={createIssue.isPending}
+             >
+@@ -1461,6 +1466,7 @@ export function NewIssueDialog() {
+               variant="ghost"
+               size="icon-xs"
+               className="text-muted-foreground"
++              aria-label={copy("Close dialog")}
+               onClick={() => closeNewIssue()}
+               disabled={createIssue.isPending}
+             >
+@@ -1498,17 +1504,17 @@ export function NewIssueDialog() {
+           <div className="px-4 pb-2">
+             <div className="overflow-x-auto overscroll-x-contain">
+               <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
+-              <span className="w-6 shrink-0 text-center">For</span>
++              <span className="w-6 shrink-0 text-center">{copy("For")}</span>
+               <InlineEntitySelector
+                 ref={assigneeSelectorRef}
+                 value={assigneeValue}
+                 options={assigneeOptions}
+                 recentOptionIds={recentAssigneeOptionIds}
+-                placeholder="Assignee"
++                placeholder={copy("Assignee")}
+                 disablePortal
+-                noneLabel="No assignee"
+-                searchPlaceholder="Search assignees..."
+-                emptyMessage="No assignees found."
++                noneLabel={copy("No assignee")}
++                searchPlaceholder={copy("Search assignees...")}
++                emptyMessage={copy("No assignees found.")}
+                 onChange={(value) => {
+                   const nextAssignee = parseAssigneeValue(value);
+                   if (nextAssignee.assigneeAgentId) {
+@@ -1538,7 +1544,7 @@ export function NewIssueDialog() {
+                       <span className="truncate">{option.label}</span>
+                     )
+                   ) : (
+-                    <span className="text-muted-foreground">Assignee</span>
++                    <span className="text-muted-foreground">{copy("Assignee")}</span>
+                   )
+                 }
+                 renderOption={(option) => {
+@@ -1551,23 +1557,23 @@ export function NewIssueDialog() {
+                       {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                       <span className="truncate">{option.label}</span>
+                       {assignee && getTrustPreset(assignee.permissions) === "low_trust_review" ? (
+-                        <ShieldAlert className="ml-auto h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-label="Low-trust review agent" />
++                        <ShieldAlert className="ml-auto h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-label={copy("Low-trust review agent")} />
+                       ) : null}
+                     </>
+                   );
+                 }}
+               />
+-              <span>in</span>
++              <span>{copy("in")}</span>
+               <InlineEntitySelector
+                 ref={projectSelectorRef}
+                 value={projectId}
+                 options={projectOptions}
+                 recentOptionIds={recentProjectIds}
+-                placeholder="Project"
++                placeholder={copy("Project")}
+                 disablePortal
+-                noneLabel="No project"
+-                searchPlaceholder="Search projects..."
+-                emptyMessage="No projects found."
++                noneLabel={copy("No project")}
++                searchPlaceholder={copy("Search projects...")}
++                emptyMessage={copy("No projects found.")}
+                 onChange={handleProjectChange}
+                 onConfirm={() => {
+                   descriptionEditorRef.current?.focus();
+@@ -1582,7 +1588,7 @@ export function NewIssueDialog() {
+                       <span className="truncate">{option.label}</span>
+                     </>
+                   ) : (
+-                    <span className="text-muted-foreground">Project</span>
++                    <span className="text-muted-foreground">{copy("Project")}</span>
+                   )
+                 }
+                 renderOption={(option) => {
+@@ -1606,7 +1612,7 @@ export function NewIssueDialog() {
+                   <button
+                     type="button"
+                     className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent/50 transition-colors"
+-                    title={taskWatchdogsEnabled ? "Add reviewer, approver, or watchdog" : "Add reviewer or approver"}
++                    title={taskWatchdogsEnabled ? copy("Add reviewer, approver, or watchdog") : copy("Add reviewer or approver")}
+                   >
+                     <MoreHorizontal className="h-4 w-4" />
+                   </button>
+@@ -1624,7 +1630,7 @@ export function NewIssueDialog() {
+                     }}
+                   >
+                     <Eye className="h-3 w-3" />
+-                    Reviewer
++                    {copy("Reviewer")}
+                   </button>
+                   <button
+                     className={cn(
+@@ -1638,7 +1644,7 @@ export function NewIssueDialog() {
+                     }}
+                   >
+                     <ShieldCheck className="h-3 w-3" />
+-                    Approver
++                    {copy("Approver")}
+                   </button>
+                   {taskWatchdogsEnabled && (
+                     <button
+@@ -1660,7 +1666,7 @@ export function NewIssueDialog() {
+                       }}
+                     >
+                       <ScanEye className="h-3 w-3" />
+-                      Watchdog
++                      {copy("Watchdog")}
+                     </button>
+                   )}
+                 </PopoverContent>
+@@ -1676,11 +1682,11 @@ export function NewIssueDialog() {
+                 value={reviewerValue}
+                 options={assigneeOptions}
+                 recentOptionIds={recentAssigneeOptionIds}
+-                placeholder="Reviewer"
++                placeholder={copy("Reviewer")}
+                 disablePortal
+-                noneLabel="No reviewer"
+-                searchPlaceholder="Search reviewers..."
+-                emptyMessage="No reviewers found."
++                noneLabel={copy("No reviewer")}
++                searchPlaceholder={copy("Search reviewers...")}
++                emptyMessage={copy("No reviewers found.")}
+                 onChange={setReviewerValue}
+                 renderTriggerValue={(option) =>
+                   option ? (
+@@ -1694,7 +1700,7 @@ export function NewIssueDialog() {
+                       <span className="truncate">{option.label}</span>
+                     </>
+                   ) : (
+-                    <span className="text-muted-foreground">Reviewer</span>
++                    <span className="text-muted-foreground">{copy("Reviewer")}</span>
+                   )
+                 }
+                 renderOption={(option) => {
+@@ -1721,11 +1727,11 @@ export function NewIssueDialog() {
+                 value={approverValue}
+                 options={assigneeOptions}
+                 recentOptionIds={recentAssigneeOptionIds}
+-                placeholder="Approver"
++                placeholder={copy("Approver")}
+                 disablePortal
+-                noneLabel="No approver"
+-                searchPlaceholder="Search approvers..."
+-                emptyMessage="No approvers found."
++                noneLabel={copy("No approver")}
++                searchPlaceholder={copy("Search approvers...")}
++                emptyMessage={copy("No approvers found.")}
+                 onChange={setApproverValue}
+                 renderTriggerValue={(option) =>
+                   option ? (
+@@ -1739,7 +1745,7 @@ export function NewIssueDialog() {
+                       <span className="truncate">{option.label}</span>
+                     </>
+                   ) : (
+-                    <span className="text-muted-foreground">Approver</span>
++                    <span className="text-muted-foreground">{copy("Approver")}</span>
+                   )
+                 }
+                 renderOption={(option) => {
+@@ -1767,7 +1773,7 @@ export function NewIssueDialog() {
+                     <button
+                       type="button"
+                       className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors min-w-0"
+-                      title="Configure watchdog"
++                      title={copy("Configure watchdog")}
+                     >
+                       {selectedWatchdogAgent ? (
+                         <>
+@@ -1778,20 +1784,20 @@ export function NewIssueDialog() {
+                           ) : null}
+                         </>
+                       ) : (
+-                        <span className="text-muted-foreground">Set watchdog</span>
++                        <span className="text-muted-foreground">{copy("Set watchdog")}</span>
+                       )}
+                     </button>
+                   </PopoverTrigger>
+                   <PopoverContent className="w-80 p-3 space-y-3" align="start">
+                     <div className="space-y-1.5">
+-                      <div className="text-xs font-medium text-foreground">Watchdog agent</div>
++                      <div className="text-xs font-medium text-foreground">{copy("Watchdog agent")}</div>
+                       <InlineEntitySelector
+                         value={watchdogAgentId}
+                         options={watchdogAgentOptions}
+-                        placeholder="Select agent"
+-                        noneLabel="No watchdog agent"
+-                        searchPlaceholder="Search agents..."
+-                        emptyMessage="No agents found."
++                        placeholder={copy("Select agent")}
++                        noneLabel={copy("No watchdog agent")}
++                        searchPlaceholder={copy("Search agents...")}
++                        emptyMessage={copy("No agents found.")}
+                         onChange={setWatchdogAgentId}
+                         renderTriggerValue={(option) =>
+                           option ? (
+@@ -1802,7 +1808,7 @@ export function NewIssueDialog() {
+                               <span className="truncate">{option.label}</span>
+                             </>
+                           ) : (
+-                            <span className="text-muted-foreground">Select agent</span>
++                            <span className="text-muted-foreground">{copy("Select agent")}</span>
+                           )
+                         }
+                         renderOption={(option) => {
+@@ -1817,11 +1823,11 @@ export function NewIssueDialog() {
+                       />
+                     </div>
+                     <div className="space-y-1.5">
+-                      <div className="text-xs font-medium text-foreground">Instructions <span className="font-normal text-muted-foreground">(optional)</span></div>
++                      <div className="text-xs font-medium text-foreground">{copy("Instructions")} <span className="font-normal text-muted-foreground">{copy("(optional)")}</span></div>
+                       <Textarea
+                         value={watchdogInstructions}
+                         onChange={(event) => setWatchdogInstructions(event.target.value)}
+-                        placeholder="What should the watchdog watch for and how should it keep work moving?"
++                        placeholder={copy("What should the watchdog watch for and how should it keep work moving?")}
+                         rows={4}
+                         className="text-xs"
+                       />
+@@ -1837,10 +1843,10 @@ export function NewIssueDialog() {
+                           setWatchdogEditorOpen(false);
+                         }}
+                       >
+-                        Remove
++                        {copy("Remove")}
+                       </button>
+                       <Button type="button" size="sm" className="h-7 text-xs" onClick={() => setWatchdogEditorOpen(false)}>
+-                        Done
++                        {copy("Done")}
+                       </Button>
+                     </div>
+                   </PopoverContent>
+@@ -1854,7 +1860,7 @@ export function NewIssueDialog() {
+             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
+               <div className="flex items-center gap-1.5">
+                 <ListTree className="h-3.5 w-3.5 shrink-0" />
+-                <span className="shrink-0">Sub-task of</span>
++                <span className="shrink-0">{copy("Sub-task of")}</span>
+                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
+               </div>
+               {newIssueDefaults.parentTitle ? (
+@@ -1869,9 +1875,9 @@ export function NewIssueDialog() {
+           {currentProject && currentProjectSupportsExecutionWorkspace && (
+             <div className="px-4 py-3 space-y-2">
+             <div className="space-y-1.5">
+-              <div className="text-xs font-medium">Execution workspace</div>
++              <div className="text-xs font-medium">{copy("Execution workspace")}</div>
+               <div className="text-(length:--text-micro) text-muted-foreground">
+-                Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.
++                {copy("Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.")}
+               </div>
+               <select
+                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+@@ -1885,12 +1891,13 @@ export function NewIssueDialog() {
+               >
+                 {EXECUTION_WORKSPACE_MODES.map((option) => (
+                   <option key={option.value} value={option.value}>
+-                    {option.label}
++                    {copy(option.label)}
+                   </option>
+                 ))}
+               </select>
+               {executionWorkspaceMode === "reuse_existing" && (
+                 <ReusableExecutionWorkspaceSelect
++                  copy={copy}
+                   value={selectedExecutionWorkspaceId}
+                   workspaces={selectableReusableWorkspaces}
+                   onValueChange={(workspaceId) => setSelectedExecutionWorkspaceId(workspaceId)}
+@@ -1906,12 +1913,12 @@ export function NewIssueDialog() {
+               */}
+               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
+                 <div className="text-(length:--text-micro) text-muted-foreground">
+-                  Reusing {selectedReusableExecutionWorkspace.name} from {selectedReusableExecutionWorkspace.branchName ?? "existing execution workspace"}.
++                  {copy("Reusing")} {selectedReusableExecutionWorkspace.name} {copy("from")} {selectedReusableExecutionWorkspace.branchName ?? copy("existing execution workspace")}.
+                 </div>
+               )}
+               {showParentWorkspaceWarning ? (
+                 <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-(length:--text-micro) text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
+-                  Warning: this sub-task will no longer use the parent task workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
++                  {copy("Warning: this sub-task will no longer use the parent task workspace")}{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                 </div>
+               ) : null}
+             </div>
+@@ -1925,16 +1932,16 @@ export function NewIssueDialog() {
+               onClick={() => setAssigneeOptionsOpen((open) => !open)}
+             >
+               {assigneeOptionsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+-              {assigneeOptionsTitle}
++              {copy(assigneeOptionsTitle)}
+             </button>
+             {assigneeOptionsOpen && (
+               <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
+                 <div className="space-y-1.5">
+-                  <div className="text-xs text-muted-foreground">Model lane</div>
++                  <div className="text-xs text-muted-foreground">{copy("Model lane")}</div>
+                   <div
+                     className="flex w-full overflow-hidden rounded-md border border-border"
+                     role="radiogroup"
+-                    aria-label="Model lane"
++                    aria-label={copy("Model lane")}
+                   >
+                     {(["primary", ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)), "custom"] as const).map((lane) => (
+                       <button
+@@ -1949,48 +1956,48 @@ export function NewIssueDialog() {
+                         onClick={() => setAssigneeModelLane(lane)}
+                       >
+                         {lane === "primary"
+-                          ? "Primary"
++                          ? copy("Primary")
+                           : lane === "cheap"
+-                            ? "Cheap"
+-                            : "Custom"}
++                            ? copy("Cheap")
++                            : copy("Custom")}
+                       </button>
+                     ))}
+                   </div>
+                   {assigneeModelLane === "cheap" && (
+                     <p className="text-(length:--text-micro) text-muted-foreground">
+-                      Sends <code>modelProfile: "cheap"</code>{" "}
++                      {copy("Sends")} <code>modelProfile: "cheap"</code>{" "}
+                       {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
+-                        ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
++                        ? <>{copy("· adapter default")} <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
+                         : assigneeCheapProfile
+-                          ? <>· uses the agent's configured cheap profile</>
+-                          : <>· falls back to the primary model if no cheap profile is configured</>}
++                          ? <>{copy("· uses the agent's configured cheap profile")}</>
++                          : <>{copy("· falls back to the primary model if no cheap profile is configured")}</>}
+                     </p>
+                   )}
+                   {assigneeModelLane === "primary" && (
+-                    <p className="text-(length:--text-micro) text-muted-foreground">Runs on the agent's primary model.</p>
++                    <p className="text-(length:--text-micro) text-muted-foreground">{copy("Runs on the agent's primary model.")}</p>
+                   )}
+                   {assigneeModelLane === "custom" && (
+-                    <p className="text-(length:--text-micro) text-muted-foreground">Override the model and effort for this task only.</p>
++                    <p className="text-(length:--text-micro) text-muted-foreground">{copy("Override the model and effort for this task only.")}</p>
+                   )}
+                 </div>
+                 {assigneeModelLane === "custom" && (
+                   <div className="space-y-1.5">
+-                    <div className="text-xs text-muted-foreground">Model</div>
++                    <div className="text-xs text-muted-foreground">{copy("Model")}</div>
+                     <InlineEntitySelector
+                       value={assigneeModelOverride}
+                       options={modelOverrideOptions}
+-                      placeholder="Default model"
++                      placeholder={copy("Default model")}
+                       disablePortal
+-                      noneLabel="Default model"
+-                      searchPlaceholder="Search models..."
+-                      emptyMessage="No models found."
++                      noneLabel={copy("Default model")}
++                      searchPlaceholder={copy("Search models...")}
++                      emptyMessage={copy("No models found.")}
+                       onChange={setAssigneeModelOverride}
+                     />
+                   </div>
+                 )}
+                 {assigneeModelLane === "custom" && (
+                   <div className="space-y-1.5">
+-                    <div className="text-xs text-muted-foreground">Thinking effort</div>
++                    <div className="text-xs text-muted-foreground">{copy("Thinking effort")}</div>
+                     <div className="flex items-center gap-1.5 flex-wrap">
+                       {thinkingEffortOptions.map((option) => (
+                         <button
+@@ -2001,7 +2008,7 @@ export function NewIssueDialog() {
+                           )}
+                           onClick={() => setAssigneeThinkingEffort(option.value)}
+                         >
+-                          {option.label}
++                          {copy(option.label)}
+                         </button>
+                       ))}
+                     </div>
+@@ -2009,7 +2016,7 @@ export function NewIssueDialog() {
+                 )}
+                 {assigneeAdapterType === "claude_local" && assigneeModelLane === "custom" && (
+                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
+-                    <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
++                    <div className="text-xs text-muted-foreground">{copy("Enable Chrome (--chrome)")}</div>
+                     <ToggleSwitch
+                       checked={assigneeChrome}
+                       onCheckedChange={() => setAssigneeChrome((value) => !value)}
+@@ -2048,7 +2055,7 @@ export function NewIssueDialog() {
+               <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
+               {stagedDocuments.length > 0 ? (
+                 <div className="space-y-2">
+-                  <div className="text-xs font-medium text-muted-foreground">Documents</div>
++                  <div className="text-xs font-medium text-muted-foreground">{copy("Documents")}</div>
+                   <div className="space-y-2">
+                     {stagedDocuments.map((file) => (
+                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+@@ -2072,7 +2079,7 @@ export function NewIssueDialog() {
+                           className="shrink-0 text-muted-foreground"
+                           onClick={() => removeStagedFile(file.id)}
+                           disabled={createIssue.isPending}
+-                          title="Remove document"
++                          title={copy("Remove document")}
+                         >
+                           <X className="h-3.5 w-3.5" />
+                         </Button>
+@@ -2084,7 +2091,7 @@ export function NewIssueDialog() {
+ 
+               {stagedAttachments.length > 0 ? (
+                 <div className="space-y-2">
+-                  <div className="text-xs font-medium text-muted-foreground">Attachments</div>
++                  <div className="text-xs font-medium text-muted-foreground">{copy("Attachments")}</div>
+                   <div className="space-y-2">
+                     {stagedAttachments.map((file) => (
+                       <div key={file.id} className="flex items-start justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+@@ -2103,7 +2110,7 @@ export function NewIssueDialog() {
+                           className="shrink-0 text-muted-foreground"
+                           onClick={() => removeStagedFile(file.id)}
+                           disabled={createIssue.isPending}
+-                          title="Remove attachment"
++                          title={copy("Remove attachment")}
+                         >
+                           <X className="h-3.5 w-3.5" />
+                         </Button>
+@@ -2124,7 +2131,7 @@ export function NewIssueDialog() {
+             <PopoverTrigger asChild>
+               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+                 <CircleDot className={cn("h-3 w-3", currentStatus.color)} />
+-                {currentStatus.label}
++                {copy(currentStatus.label)}
+               </button>
+             </PopoverTrigger>
+             <PopoverContent className="w-56 p-1" align="start">
+@@ -2139,9 +2146,9 @@ export function NewIssueDialog() {
+                 >
+                   <CircleDot className={cn("h-3 w-3 mt-0.5 shrink-0", s.color)} />
+                   <span className="flex flex-col text-left leading-tight">
+-                    <span>{s.label}</span>
++                    <span>{copy(s.label)}</span>
+                     {s.description ? (
+-                      <span className="text-(length:--text-nano) text-muted-foreground">{s.description}</span>
++                      <span className="text-(length:--text-nano) text-muted-foreground">{copy(s.description)}</span>
+                     ) : null}
+                   </span>
+                 </button>
+@@ -2161,12 +2168,12 @@ export function NewIssueDialog() {
+                 {currentPriority ? (
+                   <>
+                     <currentPriority.icon className={cn("h-3 w-3", currentPriority.color)} />
+-                    {currentPriority.label}
++                    {copy(currentPriority.label)}
+                   </>
+                 ) : (
+                   <>
+                     <Minus className="h-3 w-3 text-muted-foreground" />
+-                    Priority
++                    {copy("Priority")}
+                   </>
+                 )}
+               </button>
+@@ -2182,7 +2189,7 @@ export function NewIssueDialog() {
+                   onClick={() => { setPriority(p.value); setPriorityOpen(false); }}
+                 >
+                   <p.icon className={cn("h-3 w-3", p.color)} />
+-                  {p.label}
++                  {copy(p.label)}
+                 </button>
+               ))}
+             </PopoverContent>
+@@ -2209,7 +2216,7 @@ export function NewIssueDialog() {
+             disabled={createIssue.isPending}
+           >
+             <Paperclip className="h-3 w-3" />
+-            Upload
++            {copy("Upload")}
+           </button>
+ 
+           {/* Work mode chip */}
+@@ -2225,7 +2232,7 @@ export function NewIssueDialog() {
+                 )}
+               >
+                 <CurrentWorkModeIcon className="h-3 w-3" />
+-                {currentWorkMode.label}
++                {copy(currentWorkMode.label)}
+               </button>
+             </PopoverTrigger>
+             <PopoverContent className="w-36 p-1" align="start">
+@@ -2259,6 +2266,7 @@ export function NewIssueDialog() {
+             <PopoverTrigger asChild>
+               <button
+                 type="button"
++                aria-label={copy("More options")}
+                 data-testid="new-issue-more-menu-trigger"
+                 className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50"
+               >
+@@ -2270,7 +2278,7 @@ export function NewIssueDialog() {
+               {SHOW_TASK_PRIORITY_UI && (
+               <div className="sm:hidden">
+                 <div className="px-2 py-1 text-(length:--text-nano) font-medium uppercase text-muted-foreground">
+-                  Priority
++                  {copy("Priority")}
+                 </div>
+                 {priorities.map((p) => (
+                   <button
+@@ -2287,7 +2295,7 @@ export function NewIssueDialog() {
+                     }}
+                   >
+                     <p.icon className={cn("h-3 w-3", p.color)} />
+-                    {p.label}
++                    {copy(p.label)}
+                   </button>
+                 ))}
+                 <div className="my-1 border-t border-border" />
+@@ -2295,11 +2303,11 @@ export function NewIssueDialog() {
+               )}
+               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
+                 <Calendar className="h-3 w-3" />
+-                Start date
++                {copy("Start date")}
+               </button>
+               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
+                 <Calendar className="h-3 w-3" />
+-                Due date
++                {copy("Due date")}
+               </button>
+             </PopoverContent>
+           </Popover>
+@@ -2312,7 +2320,7 @@ export function NewIssueDialog() {
+           >
+             <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+             <span className="leading-snug">
+-              Assigning implies executable intent - leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
++              {copy("Assigning implies executable intent - leave status as")} <span className="font-medium">{copy("Backlog")}</span> {copy("only to deliberately park this. The assignee will not be woken until status moves to")} <span className="font-medium">{copy("Todo")}</span> {copy("or")} <span className="font-medium">{copy("In Progress")}</span>{newIssueDefaults.language === "de" ? " gestartet." : "."}
+             </span>
+           </div>
+         ) : null}
+@@ -2320,8 +2328,8 @@ export function NewIssueDialog() {
+         {selectedAssigneeAgent?.status === "paused" ? (
+           <div data-testid="new-issue-paused-assignee-note" className="mx-4 mb-2">
+             <InlineBanner tone="warning" icon={PauseCircle} compact>
+-              <span className="font-medium">{selectedAssigneeAgent.name}</span> is paused and will not start work on this task until it is resumed
+-              {selectedAssigneeAgent.pauseReason === "import" ? " — it arrived paused from an organization import" : ""}. You can resume it from the task page after creating the task.
++              <span className="font-medium">{selectedAssigneeAgent.name}</span> {copy("is paused and will not start work on this task until it is resumed")}
++              {selectedAssigneeAgent.pauseReason === "import" ? copy(" — it arrived paused from an organization import") : ""}{copy(". You can resume it from the task page after creating the task.")}
+             </InlineBanner>
+           </div>
+         ) : null}
+@@ -2333,7 +2341,7 @@ export function NewIssueDialog() {
+           >
+             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+             <span className="leading-snug">
+-              Low-trust review agent. It can only act inside its assigned review boundary; task, project, or run policy defines the concrete scope.
++              {copy("Low-trust review agent. It can only act inside its assigned review boundary; task, project, or run policy defines the concrete scope.")}
+             </span>
+           </div>
+         ) : null}
+@@ -2347,7 +2355,7 @@ export function NewIssueDialog() {
+             onClick={discardDraft}
+             disabled={createIssue.isPending || !canDiscardDraft}
+           >
+-            Discard Draft
++            {copy("Discard Draft")}
+           </Button>
+           <div className="flex items-center gap-3">
+             {createIssue.isError ? (
+@@ -2364,7 +2372,7 @@ export function NewIssueDialog() {
+             >
+               <span className="inline-flex items-center justify-center gap-1.5">
+                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Task" : "Create Task"}</span>
++                <span>{createIssue.isPending ? copy("Creating...") : isSubIssueMode ? copy("Create Sub-Task") : copy("Create Task")}</span>
+               </span>
+             </Button>
+           </div>
+diff --git a/ui/src/components/ReusableExecutionWorkspaceSelect.tsx b/ui/src/components/ReusableExecutionWorkspaceSelect.tsx
+index 50cb278e..435efc81 100644
+--- a/ui/src/components/ReusableExecutionWorkspaceSelect.tsx
++++ b/ui/src/components/ReusableExecutionWorkspaceSelect.tsx
+@@ -9,9 +9,12 @@ import {
+ } from "@/lib/reusable-execution-workspaces";
+ import { cn } from "@/lib/utils";
+ 
++const identityCopy = (text: string) => text;
++
+ const COMPACT_TRIGGER_CLASS = "h-8 px-2 py-1.5 text-xs font-normal";
+ 
+ interface ReusableExecutionWorkspaceSelectProps<TWorkspace extends ReusableExecutionWorkspaceLike> {
++  copy?: (text: string) => string;
+   value: string;
+   workspaces: readonly TWorkspace[];
+   onValueChange: (workspaceId: string, option: ReusableWorkspaceOption<TWorkspace>) => void;
+@@ -25,6 +28,7 @@ interface ReusableExecutionWorkspaceSelectProps<TWorkspace extends ReusableExecu
+ }
+ 
+ export function ReusableExecutionWorkspaceSelect<TWorkspace extends ReusableExecutionWorkspaceLike>({
++  copy = identityCopy,
+   value,
+   workspaces,
+   onValueChange,
+@@ -41,12 +45,12 @@ export function ReusableExecutionWorkspaceSelect<TWorkspace extends ReusableExec
+   return (
+     <SearchableSelect<string, ReusableWorkspaceOption<TWorkspace>>
+       value={value}
+-      groups={groups}
++      groups={groups.map((group) => ({ ...group, label: group.label ? copy(group.label) : group.label }))}
+       onValueChange={onValueChange}
+-      placeholder={placeholder}
+-      searchPlaceholder="Search workspaces..."
+-      emptyMessage={error ? "Workspaces failed to load." : "No matching workspaces."}
+-      loadingMessage="Loading workspaces..."
++      placeholder={copy(placeholder)}
++      searchPlaceholder={copy("Search workspaces...")}
++      emptyMessage={error ? copy("Workspaces failed to load.") : copy("No matching workspaces.")}
++      loadingMessage={copy("Loading workspaces...")}
+       loading={loading}
+       disabled={disabled}
+       className={className}
+diff --git a/ui/src/context/DialogContext.tsx b/ui/src/context/DialogContext.tsx
+index 83ee435a..40df1b23 100644
+--- a/ui/src/context/DialogContext.tsx
++++ b/ui/src/context/DialogContext.tsx
+@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
+ import type { IssueWorkMode } from "@paperclipai/shared";
+ 
+ interface NewIssueDefaults {
++  language?: "de" | "en";
+   status?: string;
+   workMode?: IssueWorkMode;
+   priority?: string;
+diff --git a/ui/src/lib/new-issue-copy.ts b/ui/src/lib/new-issue-copy.ts
+new file mode 100644
+index 00000000..e28ea48d
+--- /dev/null
++++ b/ui/src/lib/new-issue-copy.ts
+@@ -0,0 +1,11 @@
++import { useDialog } from "../context/DialogContext";
++import german from "./new-issue-de.json";
++
++const englishCopy = (text: string) => text;
++const germanCopy = (text: string) => (german as Record<string, string>)[text] ?? text;
++
++// Translate product copy only. Task content, entity names and API values stay intact.
++export function useIssueDialogCopy() {
++  const { newIssueDefaults } = useDialog();
++  return newIssueDefaults.language === "de" ? germanCopy : englishCopy;
++}
+diff --git a/ui/src/lib/new-issue-de.json b/ui/src/lib/new-issue-de.json
+new file mode 100644
+index 00000000..200f6e9a
+--- /dev/null
++++ b/ui/src/lib/new-issue-de.json
+@@ -0,0 +1,129 @@
++{
++  "New task": "Neuer Auftrag",
++  "New sub-task": "Neuer Unterauftrag",
++  "Task title": "Auftragstitel",
++  "Add description...": "Beschreibung hinzufügen …",
++  "For": "Für",
++  "in": "im",
++  "Assignee": "Zuständig",
++  "No assignee": "Nicht zugewiesen",
++  "Search assignees...": "Zuständige suchen …",
++  "No assignees found.": "Keine Zuständigen gefunden.",
++  "Project": "Projekt",
++  "No project": "Kein Projekt",
++  "Search projects...": "Projekte suchen …",
++  "No projects found.": "Keine Projekte gefunden.",
++  "Reviewer": "Prüfung",
++  "No reviewer": "Keine Prüfung zugewiesen",
++  "Search reviewers...": "Prüfende suchen …",
++  "No reviewers found.": "Keine Prüfenden gefunden.",
++  "Approver": "Freigabe",
++  "No approver": "Keine Freigabe zugewiesen",
++  "Search approvers...": "Freigabeverantwortliche suchen …",
++  "No approvers found.": "Keine Freigabeverantwortlichen gefunden.",
++  "Add reviewer, approver, or watchdog": "Prüfung, Freigabe oder Überwachung hinzufügen",
++  "Add reviewer or approver": "Prüfung oder Freigabe hinzufügen",
++  "Watchdog": "Überwachung",
++  "Configure watchdog": "Überwachung einrichten",
++  "Set watchdog": "Überwachung festlegen",
++  "Watchdog agent": "Überwachender Agent",
++  "Select agent": "Agent auswählen",
++  "No watchdog agent": "Keine Überwachung zugewiesen",
++  "Search agents...": "Agenten suchen …",
++  "No agents found.": "Keine Agenten gefunden.",
++  "Instructions": "Anweisungen",
++  "(optional)": "(freiwillig)",
++  "What should the watchdog watch for and how should it keep work moving?": "Worauf soll die Überwachung achten und wie soll sie die Arbeit voranbringen?",
++  "Remove": "Entfernen",
++  "Done": "Erledigt",
++  "Backlog": "Zurückgestellt",
++  "Todo": "Offen",
++  "In Progress": "In Bearbeitung",
++  "In Review": "In Prüfung",
++  "Parked - assignee will not be woken": "Zurückgestellt – der zuständige Agent wird nicht gestartet",
++  "Executable - assignee will be woken": "Ausführbar – der zuständige Agent wird gestartet",
++  "Priority": "Priorität",
++  "Critical": "Kritisch",
++  "High": "Hoch",
++  "Medium": "Mittel",
++  "Low": "Niedrig",
++  "Minimal": "Minimal",
++  "X-High": "Sehr hoch",
++  "Max": "Maximum",
++  "Default": "Standard",
++  "Sub-task of": "Unterauftrag von",
++  "Execution workspace": "Arbeitsumgebung",
++  "Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.": "Lege fest, ob dieser Auftrag in der gemeinsamen, einer neuen isolierten oder einer bestehenden Arbeitsumgebung ausgeführt wird.",
++  "Project default": "Projektstandard",
++  "New isolated workspace": "Neue isolierte Arbeitsumgebung",
++  "Reuse existing workspace": "Bestehende Arbeitsumgebung nutzen",
++  "existing execution workspace": "bestehender Arbeitsumgebung",
++  "Model lane": "Modellauswahl",
++  "Primary": "Standard",
++  "Cheap": "Sparsam",
++  "Custom": "Individuell",
++  "Model": "Modell",
++  "Default model": "Standardmodell",
++  "Search models...": "Modelle suchen …",
++  "No models found.": "Keine Modelle gefunden.",
++  "Thinking effort": "Denktiefe",
++  "Runs on the agent's primary model.": "Verwendet das Standardmodell des Agenten.",
++  "Override the model and effort for this task only.": "Modell und Denktiefe nur für diesen Auftrag festlegen.",
++  "Enable Chrome (--chrome)": "Chrome aktivieren (--chrome)",
++  "Claude options": "Claude-Einstellungen",
++  "Codex options": "Codex-Einstellungen",
++  "OpenCode options": "OpenCode-Einstellungen",
++  "Agent options": "Agenten-Einstellungen",
++  "Sends": "Verwendet",
++  "· adapter default": "· Adapterstandard",
++  "· uses the agent's configured cheap profile": "· verwendet das konfigurierte Sparprofil des Agenten",
++  "· falls back to the primary model if no cheap profile is configured": "· verwendet das Standardmodell, wenn kein Sparprofil konfiguriert ist",
++  "Documents": "Dokumente",
++  "Attachments": "Anhänge",
++  "Files": "Dateien",
++  "Remove document": "Dokument entfernen",
++  "Remove attachment": "Anhang entfernen",
++  "Upload": "Hochladen",
++  "Labels": "Kategorien",
++  "Auto mode": "Automatik",
++  "Auto": "Automatik",
++  "Agent mode": "Ausführen",
++  "Agent": "Ausführen",
++  "Plan mode": "Planen",
++  "Plan": "Planen",
++  "Ask mode": "Fragen",
++  "Ask": "Fragen",
++  "Start date": "Startdatum",
++  "Due date": "Fällig am",
++  "Discard Draft": "Entwurf verwerfen",
++  "Creating issue...": "Auftrag wird erstellt …",
++  "Creating...": "Wird erstellt …",
++  "Create Sub-Task": "Unterauftrag erstellen",
++  "Create Task": "Auftrag erstellen",
++  "Failed to create task. Try again.": "Auftrag konnte nicht erstellt werden. Bitte erneut versuchen.",
++  "No company selected": "Kein Unternehmen ausgewählt",
++  "Low-trust review agent": "Prüfagent mit eingeschränkten Rechten",
++  "Low-trust review agent. It can only act inside its assigned review boundary; issue, project, or run policy defines the concrete scope.": "Prüfagent mit eingeschränkten Rechten. Er darf nur innerhalb seines zugewiesenen Prüfbereichs arbeiten. Die Regeln für Auftrag, Projekt oder Ausführung bestimmen den Umfang.",
++  "Assigning implies executable intent - leave status as": "Mit einer Zuweisung wird die Ausführung vorgesehen. Wähle",
++  "only to deliberately park this. The assignee will not be woken until status moves to": "nur, um den Auftrag bewusst zurückzustellen. Der zuständige Agent wird erst bei",
++  "or": "oder",
++  "Expand dialog": "Dialog vergrössern",
++  "Shrink dialog": "Dialog verkleinern",
++  "Close dialog": "Dialog schliessen",
++  "More options": "Weitere Optionen",
++  "No organization selected": "Kein Unternehmen ausgewählt",
++  "Reusing": "Verwendet",
++  "from": "aus",
++  "Low-trust review agent. It can only act inside its assigned review boundary; task, project, or run policy defines the concrete scope.": "Prüfagent mit eingeschränkten Rechten. Er darf nur innerhalb seines zugewiesenen Prüfbereichs arbeiten. Die Regeln für Auftrag, Projekt oder Ausführung bestimmen den Umfang.",
++  "Warning: this sub-task will no longer use the parent task workspace": "Achtung: Dieser Unterauftrag verwendet nicht mehr die Arbeitsumgebung des übergeordneten Auftrags",
++  "is paused and will not start work on this task until it is resumed": "ist pausiert und beginnt diesen Auftrag erst nach dem Fortsetzen",
++  " — it arrived paused from an organization import": " – der Agent wurde beim Import des Unternehmens pausiert",
++  ". You can resume it from the task page after creating the task.": ". Du kannst ihn nach dem Erstellen auf der Auftragsseite fortsetzen.",
++  "Choose an existing workspace": "Bestehende Arbeitsumgebung auswählen",
++  "Search workspaces...": "Arbeitsumgebungen suchen …",
++  "Workspaces failed to load.": "Arbeitsumgebungen konnten nicht geladen werden.",
++  "No matching workspaces.": "Keine passenden Arbeitsumgebungen gefunden.",
++  "Loading workspaces...": "Arbeitsumgebungen werden geladen …",
++  "Recent": "Zuletzt verwendet",
++  "Other workspaces": "Weitere Arbeitsumgebungen"
++}
+diff --git a/ui/src/pages/PaperclipKlar.tsx b/ui/src/pages/PaperclipKlar.tsx
+index 9124b674..60633421 100644
+--- a/ui/src/pages/PaperclipKlar.tsx
++++ b/ui/src/pages/PaperclipKlar.tsx
+@@ -76,7 +76,7 @@ function CompanyKlar({ companyId }: { companyId: string }) {
+       <TabsList aria-label="Paperclip Klar Ansichten"><TabsTrigger value="overview">Aufgaben</TabsTrigger><TabsTrigger value="team">KI-Team</TabsTrigger><TabsTrigger value="help">Einfach erklärt</TabsTrigger></TabsList>
+       <TabsContent value="overview" className="space-y-4">
+         {directory.isError && <p className="text-sm text-muted-foreground">Personennamen konnten nicht geladen werden. Zugewiesene Personen bleiben als solche gekennzeichnet.</p>}
+-        <WorkOverview key={taskView} initialView={taskView} companyId={companyId} agents={agents.isError ? undefined : agents.data} agentsError={agents.error} userProfiles={profiles} onNewTask={() => openNewIssue()} />
++        <WorkOverview key={taskView} initialView={taskView} companyId={companyId} agents={agents.isError ? undefined : agents.data} agentsError={agents.error} userProfiles={profiles} onNewTask={() => openNewIssue({ language: "de" })} />
+       </TabsContent>
+       <TabsContent value="team" className="space-y-4">
+         <p className="text-base text-muted-foreground">„Bereit“ bedeutet: gerade kein Arbeitslauf. Die zugeteilte Aufgabe kann trotzdem als „in Arbeit“ eingetragen sein.</p>

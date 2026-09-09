@@ -11,7 +11,7 @@ ENV CI=true NODE_OPTIONS=--max-old-space-size=4096
 RUN corepack pnpm@9.15.4 install --filter '@paperclipai/ui...' --filter '@paperclipai/plugin-sdk...' --frozen-lockfile --ignore-scripts
 RUN corepack pnpm@9.15.4 -r --filter '@paperclipai/ui...' build
 RUN cd ui && node node_modules/typescript/bin/tsc -b --pretty false \
-    && node ../node_modules/vitest/vitest.mjs run src/components/WorkOverview.test.tsx src/lib/company-routes.test.ts --pool=threads --maxWorkers=1
+    && node ../node_modules/vitest/vitest.mjs run src/components/NewIssueDialog.test.tsx src/components/WorkOverview.test.tsx src/lib/company-routes.test.ts --pool=threads --maxWorkers=1
 ARG PAPERCLIP_UI_BUILD_COMMIT
 RUN node /package/prepare.mjs stamp /build/source "$PAPERCLIP_UI_BUILD_COMMIT"
 
