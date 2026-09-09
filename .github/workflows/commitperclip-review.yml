@@ -41,6 +41,7 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
+          COMMITPERCLIP_APP_ID: ${{ vars.COMMITPERCLIP_APP_ID }}
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
 
       - name: Run quality gates
@@ -54,6 +55,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          COMMITPERCLIP_BOT_LOGIN: ${{ vars.COMMITPERCLIP_BOT_LOGIN }}
 
       - name: Run security gates
         run: node .github/scripts/check-pr-security.mjs

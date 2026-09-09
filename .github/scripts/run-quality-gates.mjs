@@ -47,7 +47,11 @@ function buildComment(author, failures, informational) {
   return lines.join('\n');
 }
 
-export async function findExistingComment(fetchFromGitHub, token, repo, prNumber) {
+export async function findExistingComment(fetchFromGitHub, token, repo, prNumber, botLogin = 'commitperclip') {
+  const slug = botLogin.replace(/\[bot\]$/, '');
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(slug)) {
+    throw new Error('ERROR: COMMITPERCLIP_BOT_LOGIN must be a GitHub App bot login.');
+  }
   for (let page = 1; ; page += 1) {
     const comments = await fetchFromGitHub(
       `/repos/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`,
@@ -55,7 +59,7 @@ export async function findExistingComment(fetchFromGitHub, token, repo, prNumber
     );
 
     const existing = comments.find(
-      c => (c.user.login === 'commitperclip[bot]' || c.user.login === 'commitperclip') &&
+      c => (c.user.login === `${slug}[bot]` || (c.user.login === slug && c.user.type === 'Bot')) &&
            c.body.includes(COMMENT_SIGNATURE)
     );
     if (existing) return existing;
@@ -134,7 +138,9 @@ async function main() {
   const commentBody = buildComment(author, allFailures, informational);
 
   // Post comment if there are failures/informational, or update existing comment
-  const existing = await findExistingComment(ghFetch, GH_TOKEN, GH_REPO, prNumber);
+  const existing = await findExistingComment(
+    ghFetch, GH_TOKEN, GH_REPO, prNumber, process.env.COMMITPERCLIP_BOT_LOGIN?.trim() || 'commitperclip'
+  );
   if (allFailures.length > 0 || informational.length > 0 || existing) {
     await upsertComment(GH_TOKEN, GH_REPO, prNumber, commentBody, existing);
   }

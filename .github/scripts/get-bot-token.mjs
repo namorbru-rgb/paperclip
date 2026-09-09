@@ -11,13 +11,21 @@
 import { createSign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const APP_ID = '3718661';
+const DEFAULT_APP_ID = '3718661';
 const OWNER_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 const REPO_PATTERN = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
-export function generateJWT(privateKey) {
+export function resolveAppId(value = process.env.COMMITPERCLIP_APP_ID) {
+  const appId = value?.trim() || DEFAULT_APP_ID;
+  if (!/^[1-9][0-9]*$/.test(appId)) {
+    throw new Error('ERROR: COMMITPERCLIP_APP_ID must be a positive numeric GitHub App ID.');
+  }
+  return appId;
+}
+
+export function generateJWT(privateKey, appId = resolveAppId()) {
   const now = Math.floor(Date.now() / 1000);
-  const payload = { iat: now - 10, exp: now + 60, iss: APP_ID };
+  const payload = { iat: now - 10, exp: now + 60, iss: resolveAppId(appId) };
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const data = `${header}.${body}`;
